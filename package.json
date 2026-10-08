@@ -15,8 +15,13 @@
     "typecheck": "next typegen && tsc --noEmit",
     "test": "node --test tests/*.test.mjs",
     "validate:structure": "node scripts/validate-structure.mjs",
-    "verify": "npm run validate:structure && npm run validate:contract && npm run lint && npm run typecheck && npm test && npm run build",
-    "validate:contract": "node scripts/validate-contract.mjs"
+    "verify": "npm run validate:structure && npm run validate:contract && npm run lint && npm run typecheck && npm test && npm run build && npm run smoke:runtime",
+    "validate:contract": "node scripts/validate-contract.mjs",
+    "postbuild": "node scripts/record-build-source.mjs",
+    "smoke:runtime": "node scripts/runtime-smoke.mjs",
+    "qualify:model": "node scripts/qualify-model.mjs",
+    "smoke:live": "node scripts/live-route-smoke.mjs",
+    "smoke:positive-control": "node scripts/runtime-smoke-positive-control.mjs"
   },
   "dependencies": {
     "next": "16.3.8",

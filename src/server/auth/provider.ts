@@ -1,14 +1,15 @@
-import type { AuthPort } from "./port";
+import type { AuthPort } from "./port.ts";
+import { createIntegrationTokenAuth } from "./integration-token.ts";
+import type { GenerationConfig } from "../generation/config.ts";
 
-export class AuthNotConfiguredError extends Error {
-  constructor() {
-    super("Authentication adapter is not configured");
-    this.name = "AuthNotConfiguredError";
+/**
+ * The active authentication adapter for the configured provider. The default runtime configures
+ * none: readGenerationConfig rejects a missing or unknown AUTH_PROVIDER, so generation fails closed
+ * before this is reached. DYAI-35 adds the real user-authentication adapter here.
+ */
+export function createAuth(config: GenerationConfig["auth"]): AuthPort {
+  switch (config.provider) {
+    case "integration_token":
+      return createIntegrationTokenAuth(config);
   }
 }
-
-export const auth: AuthPort = {
-  async requirePrincipal() {
-    throw new AuthNotConfiguredError();
-  },
-};

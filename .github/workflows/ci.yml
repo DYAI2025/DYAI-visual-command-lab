@@ -22,3 +22,5 @@ jobs:
         run: test -f package-lock.json
       - run: npm ci
       - run: npm run verify
+      - name: Runtime smoke positive control (test-only approval overlay on exported HEAD, stub provider)
+        run: npm run smoke:positive-control

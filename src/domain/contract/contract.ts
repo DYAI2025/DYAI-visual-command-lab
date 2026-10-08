@@ -52,6 +52,28 @@ export interface ResolveCommandOptions {
   allowReviewRequiredAliases?: boolean;
 }
 
+/**
+ * The command a slash names: its canonical slash, else a publicly allowed alias. Review-gated brand
+ * aliases match only when the caller opts in. Shared by the in-memory contract and the repositories.
+ */
+export function matchCommandSlash(
+  commands: readonly CommandRecord[],
+  slash: string,
+  options: ResolveCommandOptions = {},
+): CommandRecord | undefined {
+  return (
+    commands.find((item) => item.canonicalSlash === slash) ??
+    commands.find((item) =>
+      item.aliases.some(
+        (alias) =>
+          alias.slash === slash &&
+          (alias.publicUse === "allowed" ||
+            (alias.publicUse === "review_required" && options.allowReviewRequiredAliases === true)),
+      ),
+    )
+  );
+}
+
 export function createContract(bundle: ContractBundle) {
   const issues = validateContract(bundle);
   if (issues.length > 0) throw new ContractInvalidError(issues);
@@ -68,16 +90,7 @@ export function createContract(bundle: ContractBundle) {
       return byId;
     }
     const slash = slashOrId;
-    const command =
-      commands.find((item) => item.canonicalSlash === slash) ??
-      commands.find((item) =>
-        item.aliases.some(
-          (alias) =>
-            alias.slash === slash &&
-            (alias.publicUse === "allowed" ||
-              (alias.publicUse === "review_required" && options.allowReviewRequiredAliases === true)),
-        ),
-      );
+    const command = matchCommandSlash(commands, slash, options);
     if (!command) throw new ContractResolutionError("COMMAND_NOT_FOUND", `No command resolves ${slash}`);
     return command;
   }
