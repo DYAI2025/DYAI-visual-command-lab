@@ -1,0 +1,125 @@
+{
+  "schemaVersion": "1.0.0",
+  "recipes": [
+    {
+      "recipeId": "actionfigure-v1",
+      "version": "0.1.0",
+      "baseIntent": "Depict the person from the reference image as a collectible action figure in retail blister packaging, keeping their recognisable likeness, pose and expression.",
+      "truthMode": "creative_entertainment",
+      "inputs": { "referenceImage": "required" },
+      "preserve": ["subject_identity", "pose", "expression"],
+      "mayChange": ["rendering_style", "material_rendering", "scale_presentation", "background"],
+      "mutableRegions": ["whole-image"],
+      "immutableFeatures": ["recognisable facial features of the depicted person", "outfit colours and key accessories"],
+      "constraints": ["one figure per person shown in the source", "packaging text stays generic"],
+      "negativeConstraints": [
+        "no real brand names, logos or trademarks on the packaging",
+        "no added weapons",
+        "no sexualised or demeaning depiction"
+      ],
+      "parameters": [
+        {
+          "name": "packaging",
+          "type": "enum",
+          "required": false,
+          "options": ["blister", "none"],
+          "default": "blister",
+          "description": "Show the figure in retail packaging or standing on its own."
+        }
+      ],
+      "modelAdapters": [],
+      "expectedFailureModes": [
+        { "id": "likeness-drift", "description": "The figure's face no longer resembles the source person." },
+        { "id": "invented-packaging-text", "description": "The packaging shows garbled or invented text." },
+        { "id": "anatomy-errors", "description": "The figure has extra or missing limbs or fingers." }
+      ],
+      "confirmationGates": [],
+      "testedModels": [],
+      "lastTestedAt": null,
+      "fixtureRefs": [],
+      "evaluationStatus": "untested"
+    },
+    {
+      "recipeId": "mindmap-v1",
+      "version": "0.1.0",
+      "baseIntent": "Identify the main topic shown in the reference image and present it as a radial mind map with one central node and short branch labels.",
+      "truthMode": "creative_entertainment",
+      "inputs": { "referenceImage": "required" },
+      "preserve": ["source_topic"],
+      "mayChange": ["layout", "text_labels", "rendering_style", "background"],
+      "mutableRegions": ["whole-image"],
+      "immutableFeatures": [],
+      "constraints": ["one central topic node", "at most two branch levels", "short labels in the requested language"],
+      "negativeConstraints": ["no statements presented as verified facts", "no invented statistics, sources or citations"],
+      "parameters": [
+        {
+          "name": "language",
+          "type": "enum",
+          "required": false,
+          "options": ["en", "de"],
+          "default": "en",
+          "description": "Language of the branch labels."
+        }
+      ],
+      "modelAdapters": [],
+      "expectedFailureModes": [
+        { "id": "misread-topic", "description": "The map is about a different topic than the source image." },
+        { "id": "garbled-labels", "description": "Branch labels contain misspelled or unreadable text." },
+        { "id": "invented-facts", "description": "Branches state facts that the source does not support." }
+      ],
+      "confirmationGates": [],
+      "testedModels": [],
+      "lastTestedAt": null,
+      "fixtureRefs": [],
+      "evaluationStatus": "untested"
+    },
+    {
+      "recipeId": "35mm-v1",
+      "version": "0.1.0",
+      "baseIntent": "Re-render the reference photo with the tonal, colour and grain character of 35mm analogue film without altering what the photo shows.",
+      "truthMode": "truth_preserving_edit",
+      "inputs": { "referenceImage": "required" },
+      "preserve": [
+        "subject_identity",
+        "people",
+        "object_identity",
+        "geometry",
+        "logos_text",
+        "visible_defects",
+        "material_characteristics",
+        "composition"
+      ],
+      "mayChange": ["tonal_treatment", "colour_treatment", "contrast", "sharpness_treatment", "film_character"],
+      "mutableRegions": ["whole-image-tone"],
+      "immutableFeatures": ["every person, object and text element present in the source", "framing and aspect ratio"],
+      "constraints": ["global tonal, colour and grain adjustment only", "keep the source framing"],
+      "negativeConstraints": [
+        "do not add, remove or move people or objects",
+        "do not alter faces, logos or text",
+        "do not remove scratches, stains or other visible defects"
+      ],
+      "parameters": [
+        {
+          "name": "grain",
+          "type": "enum",
+          "required": false,
+          "options": ["subtle", "medium", "strong"],
+          "default": "subtle",
+          "description": "Strength of the film grain."
+        }
+      ],
+      "modelAdapters": [],
+      "expectedFailureModes": [
+        { "id": "identity-drift", "description": "Faces or objects are subtly redrawn instead of only re-toned." },
+        { "id": "content-hallucination", "description": "People, objects or details appear that the source does not contain." },
+        { "id": "defect-removal", "description": "Visible scratches, stains or wear disappear." },
+        { "id": "text-alteration", "description": "Logos or text in the photo change or become garbled." }
+      ],
+      "confirmationGates": [],
+      "testedModels": [],
+      "lastTestedAt": null,
+      "fixtureRefs": [],
+      "evaluationStatus": "untested"
+    }
+  ]
+}

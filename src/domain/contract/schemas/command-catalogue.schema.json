@@ -1,0 +1,141 @@
+{
+  "$id": "dyai-slash-cmnd/command-catalogue/1.0.0",
+  "title": "Visual Command catalogue",
+  "description": "Human-facing command metadata. UI-safe: no recipe semantics, prompts, providers or model identifiers.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "commands"],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "commands": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/command" }
+    }
+  },
+  "$defs": {
+    "slug": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+    "slash": { "type": "string", "pattern": "^/[a-z0-9][a-z0-9-]*$" },
+    "text": { "type": "string", "minLength": 1 },
+    "localizedText": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["en", "de"],
+      "properties": {
+        "en": { "$ref": "#/$defs/text" },
+        "de": { "$ref": "#/$defs/text" }
+      }
+    },
+    "localizedDisplay": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "description"],
+      "properties": {
+        "name": { "$ref": "#/$defs/text" },
+        "description": { "$ref": "#/$defs/text" }
+      }
+    },
+    "alias": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slash", "kind", "publicUse"],
+      "properties": {
+        "slash": { "$ref": "#/$defs/slash" },
+        "kind": { "enum": ["spelling_variant", "translation", "brand_term"] },
+        "publicUse": { "enum": ["allowed", "review_required", "blocked"] }
+      }
+    },
+    "thumbnail": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fixtureFamily", "src", "alt"],
+      "properties": {
+        "fixtureFamily": { "enum": ["person", "object", "space", "scene", "document"] },
+        "src": { "type": "string", "pattern": "^/[A-Za-z0-9/_.-]+$" },
+        "alt": { "$ref": "#/$defs/localizedText" }
+      }
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "canonicalSlash",
+        "aliases",
+        "lane",
+        "display",
+        "semanticClass",
+        "tags",
+        "job",
+        "recipeId",
+        "inputRequirements",
+        "thumbnails",
+        "riskFlags",
+        "maturity",
+        "evidence",
+        "provenance"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/slug" },
+        "canonicalSlash": { "$ref": "#/$defs/slash" },
+        "aliases": { "type": "array", "items": { "$ref": "#/$defs/alias" } },
+        "lane": { "enum": ["play", "explain", "polish"] },
+        "display": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["en", "de"],
+          "properties": {
+            "en": { "$ref": "#/$defs/localizedDisplay" },
+            "de": { "$ref": "#/$defs/localizedDisplay" }
+          }
+        },
+        "semanticClass": { "enum": ["visual_transform", "enriched_recipe", "professional_workflow"] },
+        "tags": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/slug" } },
+        "job": { "$ref": "#/$defs/localizedText" },
+        "recipeId": { "type": ["string", "null"], "pattern": "^[a-z0-9][a-z0-9-]*$" },
+        "inputRequirements": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sourceImage", "maxSourceImages", "acceptedMimeTypes", "textInstruction"],
+          "properties": {
+            "sourceImage": { "enum": ["required", "optional", "none"] },
+            "maxSourceImages": { "type": "integer", "minimum": 0, "maximum": 4 },
+            "acceptedMimeTypes": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "enum": ["image/jpeg", "image/png", "image/webp"] }
+            },
+            "textInstruction": { "enum": ["none", "optional", "required"] }
+          }
+        },
+        "thumbnails": { "type": "array", "items": { "$ref": "#/$defs/thumbnail" } },
+        "riskFlags": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "synthetic_visualisation",
+              "invented_content_risk",
+              "identity_preservation",
+              "brand_reference",
+              "person_likeness"
+            ]
+          }
+        },
+        "maturity": { "enum": ["candidate", "seed", "curated", "validated", "deprecated"] },
+        "evidence": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["observation", "status", "refs"],
+          "properties": {
+            "observation": { "enum": ["observed", "proposed"] },
+            "status": { "enum": ["unverified", "source_linked", "fixture_tested"] },
+            "refs": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/text" } }
+          }
+        },
+        "provenance": { "enum": ["native", "community", "custom", "semantic_alias", "unknown"] }
+      }
+    }
+  }
+}

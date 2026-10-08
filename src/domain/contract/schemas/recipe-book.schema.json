@@ -1,0 +1,161 @@
+{
+  "$id": "dyai-slash-cmnd/recipe-book/1.0.0",
+  "title": "Visual Command recipes",
+  "description": "Versioned execution semantics. Server-only: never imported by UI code.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "recipes"],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "recipes": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/recipe" }
+    }
+  },
+  "$defs": {
+    "slug": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$" },
+    "text": { "type": "string", "minLength": 1 },
+    "date": { "type": "string", "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+    "modelRef": { "type": "string", "pattern": "^[a-z0-9-]+/[a-z0-9.:-]+$" },
+    "characteristic": {
+      "enum": [
+        "subject_identity",
+        "people",
+        "object_identity",
+        "geometry",
+        "logos_text",
+        "visible_defects",
+        "material_characteristics",
+        "composition",
+        "pose",
+        "expression",
+        "source_topic"
+      ]
+    },
+    "adjustable": {
+      "enum": [
+        "exposure",
+        "tonal_treatment",
+        "colour_treatment",
+        "perceived_lighting",
+        "contrast",
+        "sharpness_treatment",
+        "film_character",
+        "atmosphere_depth",
+        "rendering_style",
+        "material_rendering",
+        "scale_presentation",
+        "background",
+        "layout",
+        "text_labels"
+      ]
+    },
+    "parameter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "type", "required", "description"],
+      "properties": {
+        "name": { "$ref": "#/$defs/slug" },
+        "type": { "enum": ["enum", "string", "number", "boolean"] },
+        "required": { "type": "boolean" },
+        "options": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/slug" } },
+        "default": { "type": ["string", "number", "boolean"] },
+        "description": { "$ref": "#/$defs/text" }
+      }
+    },
+    "modelAdapter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["modelRef", "status", "promptOverrides"],
+      "properties": {
+        "modelRef": { "$ref": "#/$defs/modelRef" },
+        "status": { "enum": ["untested", "approved", "rejected"] },
+        "promptOverrides": { "type": "array", "items": { "$ref": "#/$defs/text" } }
+      }
+    },
+    "failureMode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "description"],
+      "properties": {
+        "id": { "$ref": "#/$defs/slug" },
+        "description": { "$ref": "#/$defs/text" }
+      }
+    },
+    "confirmationGate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "when", "description"],
+      "properties": {
+        "id": { "$ref": "#/$defs/slug" },
+        "when": { "enum": ["before_generation", "before_download", "before_publication"] },
+        "description": { "$ref": "#/$defs/text" }
+      }
+    },
+    "testedModel": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["modelRef", "testedAt", "result", "fixtureRefs"],
+      "properties": {
+        "modelRef": { "$ref": "#/$defs/modelRef" },
+        "testedAt": { "$ref": "#/$defs/date" },
+        "result": { "enum": ["pass", "partial", "fail"] },
+        "fixtureRefs": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/text" } }
+      }
+    },
+    "recipe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "recipeId",
+        "version",
+        "baseIntent",
+        "truthMode",
+        "inputs",
+        "preserve",
+        "mayChange",
+        "mutableRegions",
+        "immutableFeatures",
+        "constraints",
+        "negativeConstraints",
+        "parameters",
+        "modelAdapters",
+        "expectedFailureModes",
+        "confirmationGates",
+        "testedModels",
+        "lastTestedAt",
+        "fixtureRefs",
+        "evaluationStatus"
+      ],
+      "properties": {
+        "recipeId": { "$ref": "#/$defs/slug" },
+        "version": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$" },
+        "baseIntent": { "$ref": "#/$defs/text" },
+        "truthMode": { "enum": ["creative_entertainment", "truth_preserving_edit", "evidence_grounded_workflow"] },
+        "inputs": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["referenceImage"],
+          "properties": {
+            "referenceImage": { "enum": ["required", "optional", "none"] }
+          }
+        },
+        "preserve": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/characteristic" } },
+        "mayChange": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/adjustable" } },
+        "mutableRegions": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "$ref": "#/$defs/slug" } },
+        "immutableFeatures": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/text" } },
+        "constraints": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/text" } },
+        "negativeConstraints": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/text" } },
+        "parameters": { "type": "array", "items": { "$ref": "#/$defs/parameter" } },
+        "modelAdapters": { "type": "array", "items": { "$ref": "#/$defs/modelAdapter" } },
+        "expectedFailureModes": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/failureMode" } },
+        "confirmationGates": { "type": "array", "items": { "$ref": "#/$defs/confirmationGate" } },
+        "testedModels": { "type": "array", "items": { "$ref": "#/$defs/testedModel" } },
+        "lastTestedAt": { "type": ["string", "null"], "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$" },
+        "fixtureRefs": { "type": "array", "uniqueItems": true, "items": { "$ref": "#/$defs/text" } },
+        "evaluationStatus": { "enum": ["untested", "fixture_tested", "benchmarked", "rejected"] }
+      }
+    }
+  }
+}

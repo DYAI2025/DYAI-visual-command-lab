@@ -1,0 +1,261 @@
+{
+  "$id": "dyai-slash-cmnd/model-registry/1.0.0",
+  "title": "Model capability registry",
+  "description": "Provider/runtime capability metadata. Server-only and separate from commands and recipes.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "models"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0.0"
+    },
+    "models": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/model"
+      }
+    }
+  },
+  "$defs": {
+    "text": {
+      "type": "string",
+      "minLength": 1
+    },
+    "date": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "provider",
+        "providerModelId",
+        "capabilities",
+        "allowlist",
+        "benchmarkStatus",
+        "cost",
+        "latency",
+        "policy",
+        "lifecycle",
+        "evidenceRefs"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]+/[a-z0-9.:-]+$"
+        },
+        "provider": {
+          "enum": [
+            "openrouter"
+          ]
+        },
+        "providerModelId": {
+          "type": "string",
+          "pattern": "^[a-z0-9-]+/[a-z0-9.:-]+$"
+        },
+        "capabilities": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "inputModalities",
+            "outputModalities",
+            "referenceImage",
+            "maxReferenceImages"
+          ],
+          "properties": {
+            "inputModalities": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "text",
+                  "image",
+                  "file",
+                  "audio",
+                  "video"
+                ]
+              }
+            },
+            "outputModalities": {
+              "type": "array",
+              "minItems": 1,
+              "uniqueItems": true,
+              "items": {
+                "enum": [
+                  "text",
+                  "image"
+                ]
+              }
+            },
+            "referenceImage": {
+              "type": "boolean"
+            },
+            "maxReferenceImages": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "aspectRatios": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "type": "string",
+                "pattern": "^[0-9]+:[0-9]+$"
+              }
+            }
+          }
+        },
+        "allowlist": {
+          "enum": [
+            "allowed",
+            "candidate",
+            "blocked"
+          ]
+        },
+        "benchmarkStatus": {
+          "enum": [
+            "unbenchmarked",
+            "in_progress",
+            "passed",
+            "failed"
+          ]
+        },
+        "cost": {
+          "$ref": "#/$defs/cost"
+        },
+        "latency": {
+          "$ref": "#/$defs/latency"
+        },
+        "policy": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "privacyReview",
+            "dataRetention"
+          ],
+          "properties": {
+            "privacyReview": {
+              "enum": [
+                "unreviewed",
+                "approved",
+                "rejected"
+              ]
+            },
+            "dataRetention": {
+              "enum": [
+                "unknown",
+                "none",
+                "provider_limited",
+                "provider_retained"
+              ]
+            }
+          }
+        },
+        "lifecycle": {
+          "enum": [
+            "active",
+            "disabled",
+            "deprecated"
+          ]
+        },
+        "evidenceRefs": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/text"
+          }
+        }
+      }
+    },
+    "cost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "source",
+        "observedAt"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "unknown",
+            "provider_listed",
+            "measured"
+          ]
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "observedAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "inputUsdPerMillionTokens": {
+          "type": "number",
+          "minimum": 0
+        },
+        "textOutputUsdPerMillionTokens": {
+          "type": "number",
+          "minimum": 0
+        },
+        "imageOutputUsdPerMillionTokens": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "latency": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "source",
+        "observedAt"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "unknown",
+            "provider_listed",
+            "measured"
+          ]
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "minLength": 1
+        },
+        "observedAt": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "p50Ms": {
+          "type": "number",
+          "minimum": 0
+        },
+        "p95Ms": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}
