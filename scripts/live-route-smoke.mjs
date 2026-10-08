@@ -6,13 +6,13 @@
 //   npm run build
 //   OPENROUTER_API_KEY=... node scripts/live-route-smoke.mjs --live [--save <dir outside the repo>]
 //
-// No re-roll: one run, the outcome is recorded whatever it is.
+// No re-roll: one run per candidate code state, the outcome is recorded whatever it is.
 
 import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-import { buildSource, gitState, outsideRepository, resolvePlan } from "./lib/plan.mjs";
+import { buildSource, EVIDENCE_DIR, evidenceRecords, gitState, outsideRepository, resolvePlan, sameCodeAs, writeEvidence } from "./lib/plan.mjs";
 import { inspectImage } from "../src/server/generation/image.ts";
 import { generationEvents, startApp } from "./lib/next-app.mjs";
 
@@ -50,14 +50,14 @@ if (!candidate.clean || !built?.clean || built.sha !== candidate.sha) {
 }
 const { plan } = await resolvePlan(COMMAND); // throws if the committed repositories cannot execute it
 
-// No re-roll: one real generation per candidate commit.
-const EVIDENCE_DIR = "docs/evidence/dyai-37";
-const previous = (fs.existsSync(EVIDENCE_DIR) ? fs.readdirSync(EVIDENCE_DIR) : [])
-  .filter((name) => name.startsWith("live-route-") && name.endsWith(".json"))
-  .map((name) => JSON.parse(fs.readFileSync(path.join(EVIDENCE_DIR, name), "utf8")))
-  .find((item) => item.candidate?.gitSha === candidate.sha && item.plan?.commandId === plan.commandId);
+// No re-roll: one real generation per candidate code state. A record (incomplete, failed or passed)
+// made on the same code, i.e. nothing changed outside docs/evidence since its commit, is that run;
+// committing its evidence does not make a new candidate.
+const previous = evidenceRecords("live-route-").find(
+  (item) => item.plan?.commandId === plan.commandId && sameCodeAs(item.candidate?.gitSha),
+);
 if (previous) {
-  console.error(`live-route-smoke: ${previous.recordedAt} already recorded a run (${previous.outcome}) for ${plan.commandId} on ${candidate.sha}; refusing a second call`);
+  console.error(`live-route-smoke: ${previous.file} already records a run (${previous.outcome ?? "unknown"}) for ${plan.commandId} on this code; refusing a second call`);
   process.exit(2);
 }
 
@@ -100,6 +100,19 @@ const post = async (withToken) => {
   return { status: response.status, text, latencyMs: Math.round(performance.now() - started) };
 };
 
+const startedAt = new Date().toISOString();
+const outFile = path.join(EVIDENCE_DIR, `live-route-${plan.commandId}-${startedAt.replace(/[:.]/g, "-")}.json`);
+const base = {
+  kind: "dyai-37-live-route-smoke",
+  scope: "Production build (next start, local loopback), real OpenRouter Image API, integration principal, synthetic non-personal fixture. Proves the authenticated route path end to end once; not a deployment, quality or user-value claim.",
+  recordedAt: startedAt,
+  candidate: { gitSha: candidate.sha, cleanTree: candidate.clean, buildSha: built.sha },
+  plan,
+  fixture: { path: FIXTURE, sha256: sha256(fixture) },
+};
+// Recorded before the first request: a run that dies mid-call still counts as this candidate's run.
+writeEvidence(outFile, { ...base, outcome: "incomplete" }, [apiKey, token]);
+
 const checks = {};
 let output = null;
 let success;
@@ -141,25 +154,15 @@ if (success?.status === 200) forbidden.push(JSON.parse(success.text).output.base
 checks.serverLogHasNoKeyTokenOrImage = !forbidden.some((item) => log.includes(item));
 checks.responsesHaveNoKey = !(success?.text ?? "").includes(apiKey);
 
-const startedAt = new Date().toISOString();
 const evidence = {
-  kind: "dyai-37-live-route-smoke",
-  scope: "Production build (next start, local loopback), real OpenRouter Image API, integration principal, synthetic non-personal fixture. Proves the authenticated route path end to end once; not a deployment, quality or user-value claim.",
-  recordedAt: startedAt,
-  candidate: { gitSha: candidate.sha, cleanTree: candidate.clean, buildSha: built.sha },
-  plan,
-  fixture: { path: FIXTURE, sha256: sha256(fixture) },
+  ...base,
   request: { status: success?.status ?? null, latencyMs: success?.latencyMs ?? null, error: success?.status === 200 ? null : (() => { try { return JSON.parse(success.text).error; } catch { return "unparseable"; } })() },
   output,
   telemetry: events,
   checks,
   outcome: Object.values(checks).every(Boolean) ? "pass" : "fail",
 };
-const serialized = JSON.stringify(evidence, null, 2);
-if (serialized.includes(apiKey) || serialized.includes(token)) throw new Error("refusing to write evidence containing a credential");
-fs.mkdirSync("docs/evidence/dyai-37", { recursive: true });
-const outFile = `docs/evidence/dyai-37/live-route-${plan.commandId}-${startedAt.replace(/[:.]/g, "-")}.json`;
-fs.writeFileSync(outFile, `${serialized}\n`);
+const serialized = writeEvidence(outFile, evidence, [apiKey, token]);
 console.log(serialized);
 console.error(`evidence written: ${outFile}`);
 process.exit(evidence.outcome === "pass" ? 0 : 1);

@@ -20,7 +20,7 @@ Resolution boundary).
 | --- | --- | --- |
 | `command` | yes | Canonical slash (`/actionfigure`), a publicly allowed alias, or a command id |
 | `image` | yes | The source image file. JPEG, PNG or WebP, identified from its bytes; a declared part type other than the detected one is rejected (an empty type or `application/octet-stream` is accepted and the bytes decide) |
-| `parameters` | no | JSON object of recipe parameter values, all strings (for example `{"packaging":"none"}`); a `string`-typed parameter takes one line of at most 200 characters without control characters |
+| `parameters` | no | JSON object of recipe parameter values, all strings (for example `{"packaging":"none"}`); only `enum`, `number` and `boolean` parameters execute (a recipe that declares a `string` parameter answers `503 execution_not_configured`) |
 
 `Authorization: Bearer <token>` identifies the principal (see Authentication). There is no free-text
 instruction field in this slice: the provider prompt is built on the server from the recipe only.
@@ -58,7 +58,7 @@ Each step fails closed, and nothing reaches OpenRouter unless every earlier step
 6. command (repository), then the central command stop list;
 7. recipe → model → execution plan through the repositories and the model registry (Resolution
    boundary), then the central model stop list;
-8. execution profile for the model, source image (count, type from bytes, dimensions) and recipe parameters;
+8. execution profile for the model, no free-text (`string`) recipe parameter, source image (count, type from bytes, dimensions) and recipe parameters;
 9. one generation in flight per principal;
 10. generation quota reservation;
 11. global spend reservation, then the kill switch once more;
@@ -224,7 +224,9 @@ qualifies one technical path, `/actionfigure` (`actionfigure-v1`) on `google/gem
    adapter with `tests/fixtures/qualification/synthetic-figure-01.png` (a programmatically drawn
    cartoon figure; regenerate with `scripts/make-qualification-fixture.mjs`) and writes
    `docs/evidence/dyai-37/qualification-*.json` (metadata and hashes only, plus the commit it ran on).
-   It refuses a second call when a passing record for the same model, fixture and prompt exists.
+   It writes an `incomplete` record before the call and refuses a second call when a record for the
+   same model, fixture and prompt exists that passed, or was made on the same code (no change outside
+   `docs/evidence/` since its commit), whatever its outcome.
 2. Only after a technical pass: a separate commit records the test on the recipe (`testedModels`,
    `evaluationStatus: fixture_tested`, an approved adapter) and moves the model to `allowed` with
    `benchmarkStatus: passed` and a scoped privacy approval, citing the evidence file and its sha256.
@@ -234,7 +236,10 @@ qualifies one technical path, `/actionfigure` (`actionfigure-v1`) on `google/gem
 3. `npm run build` on that clean commit, then `node scripts/live-route-smoke.mjs --live` runs one real
    generation through `next start` over HTTP and writes `docs/evidence/dyai-37/live-route-*.json`. It
    refuses to run unless the working tree is clean and the build (`.next/dyai-build-source.json`,
-   written by `postbuild`) was made from `HEAD`, and it records that commit as the candidate.
+   written by `postbuild`) was made from `HEAD`, and it records that commit as the candidate. It
+   writes an `incomplete` record before the first request and refuses a second run for the command
+   when a record exists from the same code (no change outside `docs/evidence/` since its commit),
+   whatever its outcome: committing a failed run's evidence does not make a new candidate.
 
 Status: see `docs/evidence/dyai-37/`. Steps 1–3 need an `OPENROUTER_API_KEY` with available account
 credit; until they pass, no command is executable.

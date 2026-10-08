@@ -30,10 +30,62 @@ export async function qualificationTarget(ref, modelId) {
   return { command, recipe, model };
 }
 
-/** True when dir is outside the project directory (not the directory itself, not below it). */
+/**
+ * True when dir is outside the project directory (not the directory itself, not below it). Symlinks
+ * are resolved through the nearest existing ancestor, so a link into the project does not count as
+ * outside it.
+ */
 export function outsideRepository(dir) {
-  const relative = path.relative(fs.realpathSync("."), path.resolve(dir));
+  let existing = path.resolve(dir);
+  const rest = [];
+  while (!fs.existsSync(existing)) {
+    rest.unshift(path.basename(existing));
+    existing = path.dirname(existing);
+  }
+  const relative = path.relative(fs.realpathSync("."), path.join(fs.realpathSync(existing), ...rest));
   return path.isAbsolute(relative) || relative === ".." || relative.startsWith(`..${path.sep}`);
+}
+
+/** Where the live scripts record their runs (metadata and hashes only). */
+export const EVIDENCE_DIR = "docs/evidence/dyai-37";
+
+/** The recorded runs whose file name starts with prefix ("qualification-", "live-route-"). */
+export function evidenceRecords(prefix) {
+  if (!fs.existsSync(EVIDENCE_DIR)) return [];
+  return fs
+    .readdirSync(EVIDENCE_DIR)
+    .filter((name) => name.startsWith(prefix) && name.endsWith(".json"))
+    .map((name) => ({ file: path.join(EVIDENCE_DIR, name), ...JSON.parse(fs.readFileSync(path.join(EVIDENCE_DIR, name), "utf8")) }));
+}
+
+/**
+ * True when HEAD carries the same code as commit sha: nothing changed outside docs/evidence since.
+ * A run recorded there is a run of this candidate, so committing its evidence does not license a
+ * second paid call. An unknown commit counts as the same code (fail closed).
+ */
+export function sameCodeAs(sha) {
+  if (typeof sha !== "string" || !/^[0-9a-f]{40}$/.test(sha)) return true;
+  try {
+    execFileSync("git", ["cat-file", "-e", `${sha}^{commit}`], { stdio: "ignore" });
+  } catch {
+    return true;
+  }
+  try {
+    execFileSync("git", ["diff", "--quiet", sha, "HEAD", "--", ".", `:(exclude)${EVIDENCE_DIR}`], { stdio: "ignore" });
+    return true;
+  } catch (error) {
+    if (error.status === 1) return false;
+    throw error;
+  }
+}
+
+/** Writes a run record, first as `incomplete` before the paid call, then with its outcome. */
+export function writeEvidence(file, record, secrets) {
+  const serialized = JSON.stringify(record, null, 2);
+  if (secrets.some((secret) => secret && serialized.includes(secret))) throw new Error("refusing to write evidence containing a credential");
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, `${serialized}\n`);
+  return serialized;
 }
 
 /**

@@ -7,13 +7,13 @@
 //   OPENROUTER_API_KEY=... node scripts/qualify-model.mjs --live [--save <dir outside the repo>]
 //
 // The key is read from the environment and used only in the Authorization header. It is never
-// printed or written. No re-roll: one call per invocation, whatever the outcome.
+// printed or written. No re-roll: one call per plan and code state, whatever the outcome.
 
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-import { gitState, outsideRepository, qualificationTarget } from "./lib/plan.mjs";
+import { EVIDENCE_DIR, evidenceRecords, gitState, outsideRepository, qualificationTarget, sameCodeAs, writeEvidence } from "./lib/plan.mjs";
 import { composePrompt, resolveParameters } from "../src/server/generation/prompt.ts";
 import { inspectImage } from "../src/server/generation/image.ts";
 import { createOpenRouterClient, EXECUTION_PROFILES, ProviderError } from "../src/server/openrouter/client.ts";
@@ -66,16 +66,16 @@ if (!apiKey) {
   process.exit(2);
 }
 const repo = gitState();
-// One qualification call per plan: a passing record for the same model, fixture and prompt already
-// is the evidence; a second paid call would only re-roll it.
-const EVIDENCE_DIR = "docs/evidence/dyai-37";
-const passed = (fs.existsSync(EVIDENCE_DIR) ? fs.readdirSync(EVIDENCE_DIR) : [])
-  .filter((name) => name.startsWith("qualification-") && name.endsWith(".json"))
-  .map((name) => JSON.parse(fs.readFileSync(path.join(EVIDENCE_DIR, name), "utf8")))
-  .find((item) => item.result?.outcome === "technical_pass" && item.plan?.model === plan.model &&
-    item.plan?.fixture?.sha256 === plan.fixture.sha256 && item.plan?.promptSha256 === plan.promptSha256);
-if (passed) {
-  console.error(`qualify-model: a technical_pass for this exact plan is already recorded (${passed.startedAt}); refusing a second call`);
+// No re-roll. A passing record for the same model, fixture and prompt already is the evidence; any
+// record for that plan made on the same code (incomplete, failed or passed) is this candidate's one
+// call. Only a code change (outside docs/evidence) earns a new attempt after a failure.
+const previous = evidenceRecords("qualification-").find(
+  (item) => item.plan?.model === plan.model && item.plan?.fixture?.sha256 === plan.fixture.sha256 &&
+    item.plan?.promptSha256 === plan.promptSha256 &&
+    (item.result?.outcome === "technical_pass" || sameCodeAs(item.candidate?.gitSha)),
+);
+if (previous) {
+  console.error(`qualify-model: ${previous.file} already records a call (${previous.result?.outcome ?? "unknown"}) for this plan; refusing a second call`);
   process.exit(2);
 }
 
@@ -93,6 +93,18 @@ const client = createOpenRouterClient({
 });
 
 const startedAt = new Date().toISOString();
+const outFile = path.join(EVIDENCE_DIR, `qualification-${MODEL.replace(/\W+/g, "-")}-${startedAt.replace(/[:.]/g, "-")}.json`);
+const evidence = {
+  kind: "dyai-37-technical-qualification",
+  scope: "One real OpenRouter Image API call with a synthetic, non-personal fixture. Proves the reference-image request/response path for this recipe on this model; not a quality, likeness or user-value benchmark.",
+  startedAt,
+  candidate: { gitSha: repo.sha, cleanTree: repo.clean },
+  calls: 1,
+  plan,
+  // Recorded before the call: a run that dies mid-call still counts as this plan's one call.
+  result: { outcome: "incomplete" },
+};
+writeEvidence(outFile, evidence, [apiKey]);
 const started = performance.now();
 let record;
 try {
@@ -135,21 +147,7 @@ try {
   };
 }
 
-const evidence = {
-  kind: "dyai-37-technical-qualification",
-  scope: "One real OpenRouter Image API call with a synthetic, non-personal fixture. Proves the reference-image request/response path for this recipe on this model; not a quality, likeness or user-value benchmark.",
-  startedAt,
-  candidate: { gitSha: repo.sha, cleanTree: repo.clean },
-  calls: 1,
-  plan,
-  result: record,
-};
-const serialized = JSON.stringify(evidence, null, 2);
-if (serialized.includes(apiKey)) throw new Error("refusing to write evidence containing the key");
-const outDir = EVIDENCE_DIR;
-fs.mkdirSync(outDir, { recursive: true });
-const outFile = path.join(outDir, `qualification-${MODEL.replace(/\W+/g, "-")}-${startedAt.replace(/[:.]/g, "-")}.json`);
-fs.writeFileSync(outFile, `${serialized}\n`);
+const serialized = writeEvidence(outFile, { ...evidence, result: record }, [apiKey]);
 console.log(serialized);
 console.error(`evidence written: ${outFile}`);
 process.exit(record.outcome === "technical_pass" ? 0 : 1);

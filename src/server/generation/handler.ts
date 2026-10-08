@@ -143,6 +143,9 @@ export async function handleGenerate(request: Request, deps: GenerationDeps): Pr
 
     const profile = (deps.profiles ?? EXECUTION_PROFILES)[plan.modelId];
     if (!profile) return fail(503, "execution_not_configured");
+    // No free-text channel into the provider prompt in this slice: a recipe that declares a string
+    // parameter would put client text into the server-built prompt, so it is not executable here.
+    if (recipe.parameters.some((parameter) => parameter.type === "string")) return fail(503, "execution_not_configured");
 
     // Source image: exactly what the command, recipe and model accept, checked on the bytes.
     const maxImages = Math.min(command.inputRequirements.maxSourceImages, model.capabilities.maxReferenceImages);

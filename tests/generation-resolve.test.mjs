@@ -169,3 +169,16 @@ test("an unexpected failure records its error class, never its message", async (
   assert.ok(!JSON.stringify(setup.events).includes("hunter2"));
   assert.ok(!JSON.stringify(body).includes("hunter2"));
 });
+
+test("a recipe with a free-text (string) parameter is not executable: 503 before the provider", async () => {
+  const setup = deps({
+    sources: approvedSources((bundle) => {
+      bundle.recipes.recipes
+        .find((recipe) => recipe.recipeId === "actionfigure-v1")
+        .parameters.push({ name: "caption", type: "string", required: false, description: "caption text" });
+    }),
+  });
+  const { status, body } = await call(setup);
+  assert.deepEqual([status, body.error], [503, "execution_not_configured"]);
+  assert.equal(setup.provider.calls.length, 0);
+});
