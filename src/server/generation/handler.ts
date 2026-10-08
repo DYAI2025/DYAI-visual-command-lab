@@ -13,7 +13,8 @@ import { resolveCommandRef, resolveExecution, type ExecutionSources, type Resolv
 
 // POST /api/generate. Order of checks, each failing closed before anything later runs:
 //   kill switch -> configuration -> authentication -> burst limit -> bounded body parse ->
-//   command/recipe/model resolution (repositories + model registry) -> central stop lists -> source image and parameters ->
+//   command resolution -> command stop list -> recipe/model resolution (repositories + model
+//   registry) -> model stop list -> source image and parameters ->
 //   one in-flight generation per principal -> generation quota -> global spend reservation ->
 //   provider call -> settle quota and spend.
 // Nothing reaches the provider unless every earlier step passed.
@@ -222,6 +223,8 @@ export async function handleGenerate(request: Request, deps: GenerationDeps): Pr
     }
   } catch (error) {
     if (error instanceof GenerationRequestError) return fail(error.status, error.code);
+    // The class name only (telemetry sanitizes it); never the message, which may carry data.
+    context.errorName = error instanceof Error ? error.name : typeof error;
     return fail(500, "generation_boundary_failed");
   }
 }

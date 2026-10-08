@@ -73,6 +73,15 @@ test("generation reads commands and recipes only through the catalogue repositor
   assert.deepEqual(violations(GENERATION_ENTRIES), []);
 });
 
+test("no file on the generation path names the static documents or the static contract (fs reads included)", () => {
+  const files = new Set([...GENERATION_ENTRIES, ...edgesFrom(GENERATION_ENTRIES).map(([, to]) => to)]);
+  const named = [...files]
+    .filter((file) => CODE.test(file) && file !== ADAPTER && !file.endsWith(" (unresolved)"))
+    .filter((file) => /catalogue\.json|recipes\.json|server\/contract\//.test(fs.readFileSync(path.join(ROOT, file), "utf8")))
+    .filter((file) => file !== "src/server/contract/index.ts");
+  assert.deepEqual(named, []);
+});
+
 test("the generation path does reach the repositories and the model registry", () => {
   const targets = new Set(edgesFrom(["src/app/api/generate/route.ts"]).map(([, to]) => to));
   for (const file of [ADAPTER, "src/server/models/index.ts", "src/server/models/registry.json", "src/server/generation/resolve.ts"]) {

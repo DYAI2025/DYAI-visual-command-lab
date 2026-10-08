@@ -13,7 +13,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-import { gitState, qualificationTarget } from "./lib/plan.mjs";
+import { gitState, outsideRepository, qualificationTarget } from "./lib/plan.mjs";
 import { composePrompt, resolveParameters } from "../src/server/generation/prompt.ts";
 import { inspectImage } from "../src/server/generation/image.ts";
 import { createOpenRouterClient, EXECUTION_PROFILES, ProviderError } from "../src/server/openrouter/client.ts";
@@ -28,7 +28,14 @@ const FIXTURE = "tests/fixtures/qualification/synthetic-figure-01.png";
 const LIMITS = { minEdge: 64, maxEdge: 4096, maxOutputBytes: 20 * 1024 * 1024 };
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
-const { command, recipe, model } = await qualificationTarget(COMMAND, MODEL);
+let target;
+try {
+  target = await qualificationTarget(COMMAND, MODEL);
+} catch (error) {
+  console.error(`qualify-model: ${COMMAND} cannot be qualified: ${error.code ?? error.name}: ${error.message.split("\n")[0]}`);
+  process.exit(2);
+}
+const { command, recipe, model } = target;
 const profile = EXECUTION_PROFILES[MODEL];
 if (!recipe || !model || !profile) {
   console.error(`qualify-model: ${MODEL} is not a compatible model with an execution profile for ${COMMAND}`);
@@ -73,7 +80,7 @@ if (passed) {
 }
 
 const saveDir = option("--save", null);
-if (saveDir && !path.relative(process.cwd(), path.resolve(saveDir)).startsWith("..")) {
+if (saveDir && !outsideRepository(saveDir)) {
   console.error("qualify-model: --save must point outside the repository (generated images are not stored in it)");
   process.exit(2);
 }

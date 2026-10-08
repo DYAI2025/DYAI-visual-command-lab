@@ -27,7 +27,9 @@ export function resolveParameters(recipe: Recipe, values: Record<string, string>
           ? /^-?\d+(\.\d+)?$/.test(text)
           : parameter.type === "boolean"
             ? text === "true" || text === "false"
-            : text.length <= 200;
+            : // A string value is one line of plain text: no control characters, so it cannot add
+              // lines (instructions) to the server-built prompt.
+              text.length <= 200 && !/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(text);
     if (!valid) throw new GenerationRequestError(400, "invalid_parameters");
     resolved[parameter.name] = text;
   }

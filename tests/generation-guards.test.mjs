@@ -206,12 +206,10 @@ test("a loopback http base URL is allowed for local provider stubs", () => {
 });
 
 test("config errors never carry configured secret values", () => {
-  try {
-    readGenerationConfig({ ...FULL_ENV, OPENROUTER_TIMEOUT_MS: "sk-or-v1-secretish" });
-    assert.fail("expected a config error");
-  } catch (error) {
-    assert.ok(!String(error.message).includes("secretish"));
-  }
+  assert.throws(
+    () => readGenerationConfig({ ...FULL_ENV, OPENROUTER_TIMEOUT_MS: "sk-or-v1-secretish" }),
+    (error) => error instanceof GenerationConfigError && error.area === "provider" && !String(error.message).includes("secretish"),
+  );
 });
 
 test("central stop lists parse comma-separated command and model ids", () => {

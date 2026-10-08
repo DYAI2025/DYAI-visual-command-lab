@@ -4,11 +4,11 @@
 
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
+import path from "node:path";
 
-import { createContract } from "../../src/domain/contract/contract.ts";
 import { commandRepository, recipeRepository } from "../../src/server/catalogue/index.ts";
 import { modelRegistry } from "../../src/server/models/index.ts";
-import { resolveCommandRef, resolveExecution } from "../../src/server/generation/resolve.ts";
+import { loadExecutionSnapshot, resolveCommandRef, resolveExecution } from "../../src/server/generation/resolve.ts";
 
 export const sources = { commands: commandRepository, recipes: recipeRepository, models: modelRegistry };
 
@@ -20,23 +20,30 @@ export async function resolvePlan(ref) {
 /**
  * What a qualification call needs before the model is approved: the command, its recipe and the
  * model, provided the model is compatible with both. Approval is not required (qualification is the
- * evidence an approval cites).
+ * evidence an approval cites), but everything else the route enforces is: a deprecated, candidate or
+ * invalid command throws exactly as it would on the route.
  */
 export async function qualificationTarget(ref, modelId) {
   const command = await resolveCommandRef(ref, sources.commands);
-  const recipe = command.recipeId === null ? null : await sources.recipes.getById(command.recipeId);
-  if (!recipe) return { command, recipe: null, model: null };
-  const snapshot = createContract({
-    catalogue: { schemaVersion: "1.0.0", commands: [command] },
-    recipes: { schemaVersion: "1.0.0", recipes: [recipe] },
-    models: await sources.models.load(),
-  });
-  const model = snapshot.findCompatibleModels(command, recipe).find((item) => item.id === modelId) ?? null;
+  const { recipe, contract } = await loadExecutionSnapshot(command, sources);
+  const model = contract.findCompatibleModels(command, recipe).find((item) => item.id === modelId) ?? null;
   return { command, recipe, model };
 }
 
-/** The commit this checkout is at, and whether the working tree has any change. */
+/** True when dir is outside the project directory (not the directory itself, not below it). */
+export function outsideRepository(dir) {
+  const relative = path.relative(fs.realpathSync("."), path.resolve(dir));
+  return path.isAbsolute(relative) || relative === ".." || relative.startsWith(`..${path.sep}`);
+}
+
+/**
+ * The commit this checkout is at, and whether the working tree has any change. Throws unless the
+ * current directory is the root of its own git checkout (an exported tree nested in another
+ * repository must not report that repository's commit).
+ */
 export function gitState() {
+  const top = execFileSync("git", ["rev-parse", "--show-toplevel"], { encoding: "utf8" }).trim();
+  if (fs.realpathSync(top) !== fs.realpathSync(".")) throw new Error(`not a git checkout root (toplevel ${top})`);
   const sha = execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
   const dirty = execFileSync("git", ["status", "--porcelain", "--untracked-files=all"], { encoding: "utf8" }).trim();
   return { sha, clean: dirty === "" };

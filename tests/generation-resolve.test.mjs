@@ -121,3 +121,51 @@ test("no model picker: a client-chosen model field is refused", async () => {
   assert.deepEqual([status, body.error], [400, "unexpected_field"]);
   assert.equal(setup.provider.calls.length, 0);
 });
+
+test("a recipe id that resolves to nothing is a data error (503), not a candidate state (422)", async () => {
+  const setup = deps({
+    sources: approvedSources((bundle) => {
+      bundle.catalogue.commands.find((command) => command.id === "actionfigure").recipeId = "ghost-v1";
+    }),
+  });
+  const { status, body } = await call(setup);
+  assert.deepEqual([status, body.error], [503, "execution_not_configured"]);
+  assert.equal(setup.provider.calls.length, 0);
+});
+
+test("a malformed command record from the repository is a data error (503)", async () => {
+  for (const mutate of [
+    (command) => { command.lane = 42; },
+    (command) => { command.recipeId = null; }, // a seed must have a recipe
+    (command) => { delete command.recipeId; },
+  ]) {
+    const setup = deps({ sources: approvedSources((bundle) => mutate(bundle.catalogue.commands.find((c) => c.id === "actionfigure"))) });
+    const { status, body } = await call(setup);
+    assert.deepEqual([status, body.error], [503, "execution_not_configured"], JSON.stringify(body));
+    assert.equal(setup.provider.calls.length, 0);
+  }
+});
+
+test("qualification targets follow the route: deprecated, candidate and unknown commands are refused", async () => {
+  const { qualificationTarget } = await import("../scripts/lib/plan.mjs");
+  const target = await qualificationTarget("/actionfigure", MODEL_ID);
+  assert.deepEqual([target.command.id, target.recipe.recipeId, target.model.id], ["actionfigure", "actionfigure-v1", MODEL_ID]);
+  await assert.rejects(qualificationTarget("/manga", MODEL_ID), (error) => error.code === "RECIPE_NOT_ASSIGNED");
+  await assert.rejects(qualificationTarget("/nope", MODEL_ID), (error) => error.code === "COMMAND_NOT_FOUND");
+  const { loadExecutionSnapshot } = await import("../src/server/generation/resolve.ts");
+  const bundle = liveBundle();
+  const deprecated = bundle.catalogue.commands.find((c) => c.id === "actionfigure");
+  deprecated.maturity = "deprecated";
+  await assert.rejects(loadExecutionSnapshot(deprecated, sourcesFrom(bundle)), (error) => error.code === "COMMAND_NOT_EXECUTABLE");
+});
+
+test("an unexpected failure records its error class, never its message", async () => {
+  const sources = approvedSources();
+  sources.models = { load: async () => { throw new TypeError("db password=hunter2 in message"); } };
+  const setup = deps({ sources });
+  const { status, body } = await call(setup);
+  assert.deepEqual([status, body.error], [500, "generation_boundary_failed"]);
+  assert.equal(setup.events.at(-1).errorName, "TypeError");
+  assert.ok(!JSON.stringify(setup.events).includes("hunter2"));
+  assert.ok(!JSON.stringify(body).includes("hunter2"));
+});

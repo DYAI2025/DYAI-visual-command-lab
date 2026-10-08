@@ -1,5 +1,13 @@
 import { spawn } from "node:child_process";
+import fs from "node:fs";
 import net from "node:net";
+
+/**
+ * Env files `next start` would load from the project directory for every variable the smoke does not
+ * set (Next's loadEnvConfig). They are gitignored, so a clean tree can still carry them; any of them
+ * would make the run's configuration differ from what the smoke and its evidence state.
+ */
+const NEXT_ENV_FILES = [".env", ".env.local", ".env.production", ".env.production.local"];
 
 export const freePort = () =>
   new Promise((resolve) => {
@@ -14,6 +22,10 @@ export const freePort = () =>
  * environment (plus PATH/HOME). Resolves once /api/health answers. `output` collects stdout+stderr.
  */
 export async function startApp(env) {
+  const present = NEXT_ENV_FILES.filter((file) => fs.existsSync(file));
+  if (present.length > 0) {
+    throw new Error(`refusing to start: ${present.join(", ")} would override the smoke environment; move it out of the project directory`);
+  }
   const port = await freePort();
   const output = [];
   const child = spawn(process.execPath, ["node_modules/next/dist/bin/next", "start", "-p", String(port), "-H", "127.0.0.1"], {
@@ -25,7 +37,7 @@ export async function startApp(env) {
   const base = `http://127.0.0.1:${port}`;
   const stop = () =>
     new Promise((resolve) => {
-      if (child.exitCode !== null) return resolve();
+      if (child.exitCode !== null || child.signalCode !== null) return resolve();
       child.once("exit", resolve);
       child.kill("SIGTERM");
     });

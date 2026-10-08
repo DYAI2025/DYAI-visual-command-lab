@@ -22,6 +22,8 @@ export interface GenerationEvent {
   providerStatus: number | null;
   costUsd: number | null;
   costSource: "provider_usage" | "unavailable" | "not_applicable";
+  /** Error class name of an unexpected failure (500), so causes can be told apart; never a message. */
+  errorName: string | null;
 }
 
 export type TelemetrySink = (event: GenerationEvent) => void;
@@ -51,6 +53,7 @@ export function buildGenerationEvent(input: Partial<Record<keyof GenerationEvent
     providerStatus: count(input.providerStatus),
     costUsd,
     costSource,
+    errorName: text(input.errorName),
   };
 }
 

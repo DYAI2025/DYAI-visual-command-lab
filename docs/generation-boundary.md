@@ -20,7 +20,7 @@ Resolution boundary).
 | --- | --- | --- |
 | `command` | yes | Canonical slash (`/actionfigure`), a publicly allowed alias, or a command id |
 | `image` | yes | The source image file. JPEG, PNG or WebP, identified from its bytes; a declared part type other than the detected one is rejected (an empty type or `application/octet-stream` is accepted and the bytes decide) |
-| `parameters` | no | JSON object of recipe parameter values, all strings (for example `{"packaging":"none"}`) |
+| `parameters` | no | JSON object of recipe parameter values, all strings (for example `{"packaging":"none"}`); a `string`-typed parameter takes one line of at most 200 characters without control characters |
 
 `Authorization: Bearer <token>` identifies the principal (see Authentication). There is no free-text
 instruction field in this slice: the provider prompt is built on the server from the recipe only.
@@ -55,8 +55,9 @@ Each step fails closed, and nothing reaches OpenRouter unless every earlier step
 3. authentication;
 4. burst limit (every authenticated attempt counts);
 5. bounded body read and parse;
-6. command → recipe → execution plan through the repositories and the model registry (Resolution boundary);
-7. central stop lists for commands and models;
+6. command (repository), then the central command stop list;
+7. recipe → model → execution plan through the repositories and the model registry (Resolution
+   boundary), then the central model stop list;
 8. execution profile for the model, source image (count, type from bytes, dimensions) and recipe parameters;
 9. one generation in flight per principal;
 10. generation quota reservation;
@@ -101,7 +102,8 @@ graph of the route and the generation scripts (with a canary that proves the che
 violation).
 
 Each request reads one command, its one recipe and the registry once, and validates exactly that
-snapshot with the domain contract validator before anything else uses it, so the cross-document
+snapshot (the command record on its own first, so a malformed record or a recipe id that resolves to
+nothing is a data error, not a client error) with the domain contract validator before anything else uses it, so the cross-document
 invariants (an allowlisted model needs a passing benchmark and an approved privacy review, an approved
 adapter needs a passing test, …) hold for repository data too. A snapshot that fails validation answers
 `503 execution_not_configured` and never reaches the provider. Resolution failures keep their contract
@@ -176,7 +178,7 @@ architecture decision (09 D-013 excludes a cache/database until evidence require
   dimensions), returned in the response body, and dropped. It is not stored.
 - Telemetry (`src/server/telemetry/generation.ts`) writes one JSON line per attempt with request id,
   outcome, error code, HTTP status, command id, lane, recipe id/version, model id, latency, provider
-  latency and status, and provider-reported cost. It never contains image bytes or base64, prompt
+  latency and status, provider-reported cost, and for an unexpected 500 the error class name. It never contains image bytes or base64, prompt
   text, provider response text, credentials or the principal id.
 - OpenRouter receives a hashed principal id (`user`), which it hashes again and does not forward raw.
 - Upstream retention is governed by the provider (see Privacy review).

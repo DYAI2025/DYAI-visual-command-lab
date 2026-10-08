@@ -65,6 +65,7 @@ test("success telemetry carries ids, lane, latency and provider cost but no imag
     providerStatus: 200,
     costUsd: 0.0387,
     costSource: "provider_usage",
+    errorName: null,
   });
   const line = JSON.stringify(setup.events);
   assert.ok(!line.includes(body.output.base64.slice(0, 40)));

@@ -12,7 +12,7 @@ import { createHash, randomBytes } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 
-import { buildSource, gitState, resolvePlan } from "./lib/plan.mjs";
+import { buildSource, gitState, outsideRepository, resolvePlan } from "./lib/plan.mjs";
 import { inspectImage } from "../src/server/generation/image.ts";
 import { generationEvents, startApp } from "./lib/next-app.mjs";
 
@@ -36,7 +36,7 @@ if (!fs.existsSync(".next/BUILD_ID")) {
   process.exit(2);
 }
 const saveDir = option("--save", null);
-if (saveDir && !path.relative(process.cwd(), path.resolve(saveDir)).startsWith("..")) {
+if (saveDir && !outsideRepository(saveDir)) {
   console.error("live-route-smoke: --save must point outside the repository");
   process.exit(2);
 }
@@ -49,6 +49,17 @@ if (!candidate.clean || !built?.clean || built.sha !== candidate.sha) {
   process.exit(2);
 }
 const { plan } = await resolvePlan(COMMAND); // throws if the committed repositories cannot execute it
+
+// No re-roll: one real generation per candidate commit.
+const EVIDENCE_DIR = "docs/evidence/dyai-37";
+const previous = (fs.existsSync(EVIDENCE_DIR) ? fs.readdirSync(EVIDENCE_DIR) : [])
+  .filter((name) => name.startsWith("live-route-") && name.endsWith(".json"))
+  .map((name) => JSON.parse(fs.readFileSync(path.join(EVIDENCE_DIR, name), "utf8")))
+  .find((item) => item.candidate?.gitSha === candidate.sha && item.plan?.commandId === plan.commandId);
+if (previous) {
+  console.error(`live-route-smoke: ${previous.recordedAt} already recorded a run (${previous.outcome}) for ${plan.commandId} on ${candidate.sha}; refusing a second call`);
+  process.exit(2);
+}
 
 const token = randomBytes(24).toString("hex");
 const fixture = fs.readFileSync(FIXTURE);
@@ -64,7 +75,12 @@ const app = await startApp({
   GENERATION_DAILY_BUDGET_USD: "0.5",
   GENERATION_MAX_COST_PER_REQUEST_USD: "0.25",
   OPENROUTER_API_KEY: apiKey,
+  // Pinned so nothing inherited can redirect the key or block the run: the real API, no stop lists.
+  OPENROUTER_BASE_URL: "https://openrouter.ai/api/v1",
   OPENROUTER_TIMEOUT_MS: "180000",
+  GENERATION_KILL_SWITCH: "off",
+  GENERATION_DISABLED_COMMANDS: "",
+  GENERATION_DISABLED_MODELS: "",
 });
 
 const form = () => {
