@@ -1,0 +1,609 @@
+{
+  "schemaVersion": "1.0.0",
+  "commands": [
+    {
+      "id": "bricktoy",
+      "canonicalSlash": "/bricktoy",
+      "aliases": [
+        {
+          "slash": "/lego",
+          "kind": "brand_term",
+          "publicUse": "review_required"
+        }
+      ],
+      "lane": "play",
+      "display": {
+        "en": {
+          "name": "Brick Toy",
+          "description": "Rebuilds the subject as a toy made of interlocking plastic bricks."
+        },
+        "de": {
+          "name": "Klemmbaustein-Look",
+          "description": "Baut das Motiv als Spielzeug aus Klemmbausteinen nach."
+        }
+      },
+      "semanticClass": "visual_transform",
+      "tags": [
+        "play",
+        "toy",
+        "playful"
+      ],
+      "job": {
+        "en": "Turn a photo into a playful, shareable brick-toy version.",
+        "de": "Ein Foto in eine verspielte, teilbare Klemmbaustein-Version verwandeln."
+      },
+      "recipeId": null,
+      "inputRequirements": {
+        "sourceImage": "required",
+        "maxSourceImages": 1,
+        "acceptedMimeTypes": [
+          "image/jpeg",
+          "image/png",
+          "image/webp"
+        ],
+        "textInstruction": "optional"
+      },
+      "thumbnails": [],
+      "riskFlags": [
+        "synthetic_visualisation",
+        "brand_reference",
+        "person_likeness"
+      ],
+      "maturity": "candidate",
+      "evidence": {
+        "observation": "proposed",
+        "status": "unverified",
+        "refs": []
+      },
+      "provenance": "custom"
+    },
+    {
+      "id": "manga",
+      "canonicalSlash": "/manga",
+      "aliases": [],
+      "lane": "play",
+      "display": {
+        "en": {
+          "name": "Manga",
+          "description": "Redraws the image in a Japanese manga illustration style."
+        },
+        "de": {
+          "name": "Manga",
+          "description": "Zeichnet das Bild im Stil einer japanischen Manga-Illustration neu."
+        }
+      },
+      "semanticClass": "visual_transform",
+      "tags": [
+        "play",
+        "illustration",
+        "style"
+      ],
+      "job": {
+        "en": "Turn a portrait or scene into a manga-style illustration.",
+        "de": "Ein Porträt oder eine Szene als Manga-Illustration darstellen."
+      },
+      "recipeId": null,
+      "inputRequirements": {
+        "sourceImage": "required",
+        "maxSourceImages": 1,
+        "acceptedMimeTypes": [
+          "image/jpeg",
+          "image/png",
+          "image/webp"
+        ],
+        "textInstruction": "optional"
+      },
+      "thumbnails": [],
+      "riskFlags": [
+        "synthetic_visualisation",
+        "person_likeness"
+      ],
+      "maturity": "candidate",
+      "evidence": {
+        "observation": "observed",
+        "status": "unverified",
+        "refs": []
+      },
+      "provenance": "unknown"
+    },
+    {
+      "id": "actionfigure",
+      "canonicalSlash": "/actionfigure",
+      "aliases": [],
+      "lane": "play",
+      "display": {
+        "en": {
+          "name": "Action Figure",
+          "description": "Turns the person in the photo into a boxed collectible action figure."
+        },
+        "de": {
+          "name": "Actionfigur",
+          "description": "Macht aus der Person im Foto eine verpackte Sammel-Actionfigur."
+        }
+      },
+      "semanticClass": "visual_transform",
+      "tags": [
+        "play",
+        "toy",
+        "portrait"
+      ],
+      "job": {
+        "en": "Create a shareable collectible-figure version of a person.",
+        "de": "Eine teilbare Sammelfiguren-Version einer Person erstellen."
+      },
+      "recipeId": "actionfigure-v1",
+      "inputRequirements": {
+        "sourceImage": "required",
+        "maxSourceImages": 1,
+        "acceptedMimeTypes": [
+          "image/jpeg",
+          "image/png",
+          "image/webp"
+        ],
+        "textInstruction": "optional"
+      },
+      "thumbnails": [],
+      "riskFlags": [
+        "synthetic_visualisation",
+        "person_likeness"
+      ],
+      "maturity": "seed",
+      "evidence": {
+        "observation": "observed",
+        "status": "unverified",
+        "refs": []
+      },
+      "provenance": "unknown"
+    },
+    {
+      "id": "miniature",
+      "canonicalSlash": "/miniature",
+      "aliases": [],
+      "lane": "play",
+      "display": {
+        "en": {
+          "name": "Miniature",
+          "description": "Renders the scene as a tiny tilt-shift miniature world."
+        },
+        "de": {
+          "name": "Miniaturwelt",
+          "description": "Stellt die Szene als winzige Miniaturwelt im Tilt-Shift-Look dar."
+        }
+      },
+      "semanticClass": "visual_transform",
+      "tags": [
+        "play",
+        "scene",
+        "playful"
+      ],
+      "job": {
+        "en": "Make an everyday scene look like a detailed miniature model.",
+        "de": "Eine Alltagsszene wie ein detailliertes Miniaturmodell aussehen lassen."
+      },
+      "recipeId": null,
+      "inputRequirements": {
+        "sourceImage": "required",
+        "maxSourceImages": 1,
+        "acceptedMimeTypes": [
+          "image/jpeg",
+          "image/png",
+          "image/webp"
+        ],
+        "textInstruction": "optional"
+      },
+      "thumbnails": [],
+      "riskFlags": [
+        "synthetic_visualisation"
+      ],
+      "maturity": "candidate",
+      "evidence": {
+        "observation": "observed",
+        "status": "unverified",
+        "refs": []
+      },
+      "provenance": "unknown"
+    },
+    {
+      "id": "mindmap",
+      "canonicalSlash": "/mindmap",
+      "aliases": [],
+      "lane": "explain",
+      "display": {
+        "en": {
+          "name": "Mind Map",
+          "description": "Turns the topic of the image into a visual mind map."
+        },
+        "de": {
+          "name": "Mindmap",
+          "description": "Macht aus dem Thema des Bildes eine visuelle Mindmap."
+        }
+      },
+      "semanticClass": "visual_transform",
+      "tags": [
+        "explain",
+        "learning",
+        "structure"
+      ],
+      "job": {
+        "en": "Structure a topic visually as a starting point for learning or planning.",
+        "de": "Ein Thema visuell strukturieren, als Ausgangspunkt zum Lernen oder Planen."
+      },
+      "recipeId": "mindmap-v1",
+      "inputRequirements": {
+        "sourceImage": "required",
+        "maxSourceImages": 1,
+        "acceptedMimeTypes": [
+          "image/jpeg",
+          "image/png",
+          "image/webp"
+        ],
+        "textInstruction": "optional"
+      },
+      "thumbnails": [],
+      "riskFlags": [
+        "synthetic_visualisation",
+        "invented_content_risk"
+      ],
+      "maturity": "seed",
+      "evidence": {
+        "observation": "observed",
+        "status": "unverified",
+        "refs": []
+      },
+      "provenance": "unknown"
+    },
+    {
+      "id": "lerncomic",
+      "canonicalSlash": "/lerncomic",
+      "aliases": [
+        {
+          "slash": "/learningcomic",
+          "kind": "translation",
+          "publicUse": "allowed"
+        }
+      ],
+      "lane": "explain",
+      "display": {
+        "en": {
+          "name": "Learning Comic",
+          "description": "Explains the topic of the image as a short comic."
+        },
+        "de": {
+          "name": "Lerncomic",
+          "description": "Erklärt das Thema des Bildes als kurzen Comic."
+        }
+      },
+      "semanticClass": "visual_transform",
+      "tags": [
+        "explain",
+        "learning",
+        "comic"
+      ],
+      "job": {
+        "en": "Make a topic approachable as a short illustrated explanation.",
+        "de": "Ein Thema als kurze, illustrierte Erklärung zugänglich machen."
+      },
+      "recipeId": null,
+      "inputRequirements": {
+        "sourceImage": "required",
+        "maxSourceImages": 1,
+        "acceptedMimeTypes": [
+          "image/jpeg",
+          "image/png",
+          "image/webp"
+        ],
+        "textInstruction": "optional"
+      },
+      "thumbnails": [],
+      "riskFlags": [
+        "synthetic_visualisation",
+        "invented_content_risk"
+      ],
+      "maturity": "candidate",
+      "evidence": {
+        "observation": "proposed",
+        "status": "unverified",
+        "refs": []
+      },
+      "provenance": "custom"
+    },
+    {
+      "id": "infographic",
+      "canonicalSlash": "/infographic",
+      "aliases": [],
+      "lane": "explain",
+      "display": {
+        "en": {
+          "name": "Infographic",
+          "description": "Presents the topic of the image as an infographic."
+        },
+        "de": {
+          "name": "Infografik",
+          "description": "Stellt das Thema des Bildes als Infografik dar."
+        }
+      },
+      "semanticClass": "visual_transform",
+      "tags": [
+        "explain",
+        "overview",
+        "structure"
+      ],
+      "job": {
+        "en": "Summarise a topic in one shareable visual overview.",
+        "de": "Ein Thema in einer teilbaren visuellen Übersicht zusammenfassen."
+      },
+      "recipeId": null,
+      "inputRequirements": {
+        "sourceImage": "required",
+        "maxSourceImages": 1,
+        "acceptedMimeTypes": [
+          "image/jpeg",
+          "image/png",
+          "image/webp"
+        ],
+        "textInstruction": "optional"
+      },
+      "thumbnails": [],
+      "riskFlags": [
+        "synthetic_visualisation",
+        "invented_content_risk"
+      ],
+      "maturity": "candidate",
+      "evidence": {
+        "observation": "observed",
+        "status": "unverified",
+        "refs": []
+      },
+      "provenance": "unknown"
+    },
+    {
+      "id": "storyboard",
+      "canonicalSlash": "/storyboard",
+      "aliases": [],
+      "lane": "explain",
+      "display": {
+        "en": {
+          "name": "Storyboard",
+          "description": "Breaks the idea in the image into a sequence of storyboard panels."
+        },
+        "de": {
+          "name": "Storyboard",
+          "description": "Zerlegt die Idee im Bild in eine Abfolge von Storyboard-Panels."
+        }
+      },
+      "semanticClass": "visual_transform",
+      "tags": [
+        "explain",
+        "sequence",
+        "planning"
+      ],
+      "job": {
+        "en": "Sketch a sequence or process as panels before producing it.",
+        "de": "Eine Abfolge oder einen Ablauf als Panels skizzieren, bevor er produziert wird."
+      },
+      "recipeId": null,
+      "inputRequirements": {
+        "sourceImage": "required",
+        "maxSourceImages": 1,
+        "acceptedMimeTypes": [
+          "image/jpeg",
+          "image/png",
+          "image/webp"
+        ],
+        "textInstruction": "optional"
+      },
+      "thumbnails": [],
+      "riskFlags": [
+        "synthetic_visualisation",
+        "invented_content_risk"
+      ],
+      "maturity": "candidate",
+      "evidence": {
+        "observation": "observed",
+        "status": "unverified",
+        "refs": []
+      },
+      "provenance": "unknown"
+    },
+    {
+      "id": "35mm",
+      "canonicalSlash": "/35mm",
+      "aliases": [],
+      "lane": "polish",
+      "display": {
+        "en": {
+          "name": "35mm Film",
+          "description": "Gives the photo the look of 35mm analogue film while keeping its content unchanged."
+        },
+        "de": {
+          "name": "35mm Film",
+          "description": "Gibt dem Foto die Anmutung von analogem 35mm-Film, ohne den Inhalt zu verändern."
+        }
+      },
+      "semanticClass": "visual_transform",
+      "tags": [
+        "polish",
+        "film",
+        "photo"
+      ],
+      "job": {
+        "en": "Give an existing photo an analogue film character.",
+        "de": "Einem vorhandenen Foto analogen Filmcharakter geben."
+      },
+      "recipeId": "35mm-v1",
+      "inputRequirements": {
+        "sourceImage": "required",
+        "maxSourceImages": 1,
+        "acceptedMimeTypes": [
+          "image/jpeg",
+          "image/png",
+          "image/webp"
+        ],
+        "textInstruction": "optional"
+      },
+      "thumbnails": [],
+      "riskFlags": [
+        "synthetic_visualisation",
+        "identity_preservation",
+        "person_likeness"
+      ],
+      "maturity": "seed",
+      "evidence": {
+        "observation": "proposed",
+        "status": "unverified",
+        "refs": []
+      },
+      "provenance": "custom"
+    },
+    {
+      "id": "cinematic",
+      "canonicalSlash": "/cinematic",
+      "aliases": [],
+      "lane": "polish",
+      "display": {
+        "en": {
+          "name": "Cinematic",
+          "description": "Applies cinematic colour, light and depth treatment while keeping the content unchanged."
+        },
+        "de": {
+          "name": "Cinematic",
+          "description": "Verleiht dem Foto filmische Farb-, Licht- und Tiefenwirkung, ohne den Inhalt zu verändern."
+        }
+      },
+      "semanticClass": "visual_transform",
+      "tags": [
+        "polish",
+        "film",
+        "photo"
+      ],
+      "job": {
+        "en": "Make an existing photo feel like a film still.",
+        "de": "Ein vorhandenes Foto wie ein Filmstill wirken lassen."
+      },
+      "recipeId": null,
+      "inputRequirements": {
+        "sourceImage": "required",
+        "maxSourceImages": 1,
+        "acceptedMimeTypes": [
+          "image/jpeg",
+          "image/png",
+          "image/webp"
+        ],
+        "textInstruction": "optional"
+      },
+      "thumbnails": [],
+      "riskFlags": [
+        "synthetic_visualisation",
+        "identity_preservation",
+        "person_likeness"
+      ],
+      "maturity": "candidate",
+      "evidence": {
+        "observation": "observed",
+        "status": "unverified",
+        "refs": []
+      },
+      "provenance": "unknown"
+    },
+    {
+      "id": "editorial",
+      "canonicalSlash": "/editorial",
+      "aliases": [],
+      "lane": "polish",
+      "display": {
+        "en": {
+          "name": "Editorial",
+          "description": "Gives the photo a clean magazine-editorial finish while keeping the content unchanged."
+        },
+        "de": {
+          "name": "Editorial",
+          "description": "Gibt dem Foto einen klaren Magazin-Look, ohne den Inhalt zu verändern."
+        }
+      },
+      "semanticClass": "visual_transform",
+      "tags": [
+        "polish",
+        "magazine",
+        "photo"
+      ],
+      "job": {
+        "en": "Prepare an existing photo for polished editorial use.",
+        "de": "Ein vorhandenes Foto für einen hochwertigen redaktionellen Einsatz aufbereiten."
+      },
+      "recipeId": null,
+      "inputRequirements": {
+        "sourceImage": "required",
+        "maxSourceImages": 1,
+        "acceptedMimeTypes": [
+          "image/jpeg",
+          "image/png",
+          "image/webp"
+        ],
+        "textInstruction": "optional"
+      },
+      "thumbnails": [],
+      "riskFlags": [
+        "synthetic_visualisation",
+        "identity_preservation",
+        "person_likeness"
+      ],
+      "maturity": "candidate",
+      "evidence": {
+        "observation": "proposed",
+        "status": "unverified",
+        "refs": []
+      },
+      "provenance": "custom"
+    },
+    {
+      "id": "prophoto",
+      "canonicalSlash": "/prophoto",
+      "aliases": [],
+      "lane": "polish",
+      "display": {
+        "en": {
+          "name": "Pro Photo",
+          "description": "Improves exposure, colour and sharpness like a professional photo edit while keeping the content unchanged."
+        },
+        "de": {
+          "name": "Profi-Foto",
+          "description": "Verbessert Belichtung, Farbe und Schärfe wie eine professionelle Bildbearbeitung, ohne den Inhalt zu verändern."
+        }
+      },
+      "semanticClass": "visual_transform",
+      "tags": [
+        "polish",
+        "enhance",
+        "photo"
+      ],
+      "job": {
+        "en": "Improve an existing photo without changing what it shows.",
+        "de": "Ein vorhandenes Foto verbessern, ohne zu verändern, was es zeigt."
+      },
+      "recipeId": null,
+      "inputRequirements": {
+        "sourceImage": "required",
+        "maxSourceImages": 1,
+        "acceptedMimeTypes": [
+          "image/jpeg",
+          "image/png",
+          "image/webp"
+        ],
+        "textInstruction": "optional"
+      },
+      "thumbnails": [],
+      "riskFlags": [
+        "synthetic_visualisation",
+        "identity_preservation",
+        "person_likeness"
+      ],
+      "maturity": "candidate",
+      "evidence": {
+        "observation": "proposed",
+        "status": "unverified",
+        "refs": []
+      },
+      "provenance": "custom"
+    }
+  ]
+}
