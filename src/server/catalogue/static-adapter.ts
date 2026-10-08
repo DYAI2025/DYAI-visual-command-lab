@@ -1,8 +1,8 @@
-import rawCatalogue from "@/domain/commands/catalogue.json" with { type: "json" };
-import rawRecipes from "@/server/recipes/recipes.json" with { type: "json" };
-import { assertValidCatalogue } from "@/domain/contract/validate-catalogue";
-import type { RecipeBook } from "@/domain/contract/types";
-import type { CommandRepository, RecipeRepository, CategoryRepository } from "./port";
+import rawCatalogue from "../../domain/commands/catalogue.json" with { type: "json" };
+import rawRecipes from "../recipes/recipes.json" with { type: "json" };
+import { assertValidCatalogue } from "../../domain/contract/validate-catalogue.ts";
+import type { RecipeBook } from "../../domain/contract/types.ts";
+import type { CommandRepository, RecipeRepository, CategoryRepository } from "./port.ts";
 
 const catalogue=assertValidCatalogue(rawCatalogue);
 const recipes=rawRecipes as RecipeBook;
