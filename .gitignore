@@ -11,3 +11,10 @@ test-results
 .DS_Store
 *.log
 tsconfig.tsbuildinfo
+
+# DYAI-39 durable catalogue databases (never committed; production hosting is a separate decision)
+/data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite

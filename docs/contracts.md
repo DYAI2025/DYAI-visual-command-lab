@@ -14,4 +14,4 @@ Provider/runtime capability plus allowlist, benchmark and privacy state. It rema
 
 ## Persistence
 
-`CommandRepository`, `RecipeRepository` and `CategoryRepository` are server-only ports. Bootstrap binds them to validated static artefacts. DYAI-39 supplies a durable relational implementation and deterministic VC-01 import path.
+`CommandRepository`, `RecipeRepository` and `CategoryRepository` are server-only ports. By default they bind to the validated static artefacts; with `COMMAND_STORE_ADAPTER=sqlite` they bind to the DYAI-39 durable store (SQLite via `node:sqlite`), which also provides the operator-only `AuthoringRepository` and the deterministic VC-01 import. The store validates every write against these contracts and the separate Model Capability registry; the registry itself is never persisted there. The VC-02 authoring lifecycle (`DRAFT/TESTING/ACTIVE/ARCHIVED`) is stored next to, never instead of, the Command `maturity`/`evidence`. See `docs/persistence.md`.

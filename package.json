@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "engines": {
-    "node": "24.x"
+    "node": ">=24.15.0 <25"
   },
   "scripts": {
     "dev": "next dev",
@@ -15,13 +15,17 @@
     "typecheck": "next typegen && tsc --noEmit",
     "test": "node --test tests/*.test.mjs",
     "validate:structure": "node scripts/validate-structure.mjs",
-    "verify": "npm run validate:structure && npm run validate:contract && npm run lint && npm run typecheck && npm test && npm run build && npm run smoke:runtime",
+    "verify": "npm run validate:structure && npm run validate:contract && npm run lint && npm run typecheck && npm test && npm run build && npm run smoke:runtime && npm run smoke:persistence",
     "validate:contract": "node scripts/validate-contract.mjs",
     "postbuild": "node scripts/record-build-source.mjs",
     "smoke:runtime": "node scripts/runtime-smoke.mjs",
     "qualify:model": "node scripts/qualify-model.mjs",
     "smoke:live": "node scripts/live-route-smoke.mjs",
-    "smoke:positive-control": "node scripts/runtime-smoke-positive-control.mjs"
+    "smoke:positive-control": "node scripts/runtime-smoke-positive-control.mjs",
+    "smoke:persistence": "node scripts/persistence-smoke.mjs",
+    "db:migrate": "node scripts/db.mjs migrate",
+    "db:import": "node scripts/db.mjs import-vc01",
+    "db:status": "node scripts/db.mjs status"
   },
   "dependencies": {
     "next": "16.3.8",

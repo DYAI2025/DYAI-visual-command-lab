@@ -6,4 +6,6 @@ Canonical decisions: Confluence D-013, D-014, D-016 and D-017. Product/technical
 
 Migration source for verified contracts/click dummy: `DYAI-Studio/DYAI-slash-cmnd@9a4f3360d0df1ead2e3b14f3568803f0260d9c27`.
 
-Not production-ready. Hosting and production database hosting remain open decisions.
+Durable Command/Recipe/Category persistence (DYAI-39): `docs/persistence.md` (opt-in via `COMMAND_STORE_ADAPTER=sqlite`).
+
+Not production-ready. Production hosting and production database hosting remain open decisions.
