@@ -63,8 +63,9 @@ export const CREDENTIAL_FORMATS: readonly [string, RegExp][] = [
 // runs to the next ";" or ",". "{data:true,...}" in a code snippet has neither.
 // RFC 2045 token (ASCII, as RFC 7230 tchar): no tspecials, no braces, no non-ASCII letters
 const MEDIA_TOKEN = "[!#$%&'*+.^_`|~0-9a-z-]{1,80}";
-// a pasted data: URI carries data after the comma; "data:image/*, return a URL" in prose does not
-const DATA_URI = new RegExp(`\\bdata:(?:${MEDIA_TOKEN}/${MEDIA_TOKEN})?(?:;[^;,\\s]{1,200}){0,8},(?=\\S)`, "i");
+// a pasted data: URI carries base64, percent-encoded or markup data right after the comma; prose such as
+// "data:image/*, return a URL" or "data:image/png;base64,… in the response" does not
+const DATA_URI = new RegExp(`\\bdata:(?:${MEDIA_TOKEN}/${MEDIA_TOKEN})?(?:;[^;,\\s]{1,200}){0,8},(?=[A-Za-z0-9+/=%<])`, "i");
 
 const JPEG_MARKERS = new Set([0xdb, 0xc0, 0xc2, 0xc4, 0xfe, ...Array.from({ length: 16 }, (_, i) => 0xe0 + i)]);
 // first bytes of the signatures below (PNG, JPEG, GIF, WebP, BMP, TIFF II/MM, ICO); HEIF/AVIF is
@@ -127,10 +128,11 @@ function configuredSecrets(env: Record<string, string | undefined>): string[] {
 
 function forbiddenText(raw: string, secrets: readonly string[]): string | null {
   if (raw.length > MAX_TEXT_LENGTH) return `text longer than ${MAX_TEXT_LENGTH} characters`;
-  // every check sees the text as written and with JSON/URL escaping undone
+  // credential formats see the text as written (unescaping them refused redirect and safelink URLs);
+  // data: URIs, images and configured secrets are also checked with JSON/URL escaping undone
   const text = unescapeRuns(raw);
   if (DATA_URI.test(raw) || DATA_URI.test(text)) return "data: URI";
-  for (const [name, format] of CREDENTIAL_FORMATS) if (format.test(raw) || format.test(text)) return `credential (${name})`;
+  for (const [name, format] of CREDENTIAL_FORMATS) if (format.test(raw)) return `credential (${name})`;
   if (secrets.some((secret) => raw.includes(secret) || text.includes(secret))) return "credential (a configured server secret)";
   for (const [run] of text.matchAll(BASE64_RUN)) {
     const image = imageInRun(run, "base64");
