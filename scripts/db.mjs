@@ -93,8 +93,10 @@ try {
     process.exit(2);
   }
   if (error?.code === "ERR_SQLITE_ERROR") {
-    // a database this CLI cannot work with (wrong shape, I/O): reported, not a stack trace
-    console.error(JSON.stringify({ event: "db.error", code: "DATABASE_UNREADABLE", message: error.message }));
+    // a database this CLI cannot work with: locked by another connection past the busy timeout
+    // (transient), or wrong shape / I/O; reported, not a stack trace
+    const code = ((error.errcode ?? -1) & 0xff) === 5 ? "DATABASE_BUSY" : "DATABASE_UNREADABLE";
+    console.error(JSON.stringify({ event: "db.error", code, message: error.message }));
     process.exit(2);
   }
   throw error;

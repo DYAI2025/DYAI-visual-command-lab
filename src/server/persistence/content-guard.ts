@@ -5,14 +5,20 @@ import { CatalogueStoreError } from "./errors.ts";
 // credentials, Model Capability runtime facts and image payloads. The contract schemas reject unknown
 // keys too; this scan runs first and at any depth, so a smuggled value fails with one explicit code.
 //
+// Threat model: an operator or an AI-generated candidate (DYAI-40) ACCIDENTALLY carries a pasted data:
+// URI, an encoded image, a well-known credential or one of this server's own secrets into authoring
+// data. Out of scope: an authenticated operator who deliberately disguises bytes or an unknown secret
+// (that operator could equally change code); for that, the size caps bound how much can be stored.
+//
 // Only decidable mechanisms, no guessing whether prose "looks like" a secret:
 //  1. structure: credential-named keys and Model Capability keys are refused at any depth;
 //  2. this server's own secrets: any text containing the value of a configured secret environment
 //     variable (OPENROUTER_API_KEY and every *KEY / *SECRET / *TOKEN / *PASSWORD variable of 16+ chars);
 //  3. fixed, prefix-anchored credential formats (CREDENTIAL_FORMATS) and `data:` URIs;
 //  4. size: 4000 characters per text, per-document byte caps, unbroken tokens of at most 64 characters
-//     (tokens containing "://": 512) and at most two 40+ character tokens per text. Separator runs
-//     (tokens with fewer than 8 distinct characters, such as "-----") do not count as payload.
+//     (http(s):// and mailto: links: 512, and these do not count toward the next rule) and at most two
+//     other 40+ character tokens per text. Separator runs (only "-=_*~#.+" characters, such as "-----")
+//     are not payload and skip the token rules.
 // Not detected: a credential of an unknown format that is shorter than 65 characters and is not this
 // server's own secret (for example a generic bearer token or a password typed into prose). Encoded
 // binary must be long unbroken tokens to be useful, so it hits the size rules; a payload cut into short
@@ -24,7 +30,6 @@ export const MAX_TOKEN_LENGTH = 64;
 export const MAX_URL_TOKEN_LENGTH = 512;
 const LONG_TOKEN = 40;
 const MAX_LONG_TOKENS = 2;
-const MIN_PAYLOAD_DISTINCT_CHARS = 8;
 const MIN_SECRET_LENGTH = 16;
 export const MAX_DOCUMENT_BYTES = { command: 32 * 1024, recipe: 64 * 1024, category: 8 * 1024 } as const;
 export type GuardedKind = keyof typeof MAX_DOCUMENT_BYTES;
@@ -60,7 +65,11 @@ export const CREDENTIAL_FORMATS: readonly [string, RegExp][] = [
   ["JWT", /\beyJ[A-Za-z0-9_-]{8,64}\.eyJ[A-Za-z0-9_-]{8}/],
   ["URL with user:password", /\b[a-z][a-z0-9+.-]{0,20}:\/\/[^\s/:@]{1,64}:[^\s/@]{1,128}@/i],
 ];
-const DATA_URI = /\bdata:[a-z0-9.+/-]{0,80}[;,]/i;
+// data:[<type>/<subtype>][;param]*, — "data:true," in a code snippet is not a data: URI
+const DATA_URI = /\bdata:(?:[a-z]{1,20}\/[a-z0-9.+-]{1,80})?(?:;[a-z0-9._=-]{1,40}){0,8},/i;
+// a link: http(s):// or mailto: at the token start, or right after "(", "[", "<", a quote or a Markdown "]("
+const LINK_TOKEN = /(?:^|[([<"'`]|\]\()(?:https?:\/\/|mailto:)/i;
+const SEPARATOR_TOKEN = /^[-=_*~#.+]+$/;
 const SECRET_ENV_NAME = /(?:^OPENROUTER_API_KEY$|KEY$|SECRET$|TOKEN$|PASSWORD$)/;
 
 /** Values of this server's secret environment variables (read at check time; never logged). */
@@ -70,15 +79,14 @@ function configuredSecrets(env: Record<string, string | undefined>): string[] {
     .map(([, value]) => (value as string).trim());
 }
 
-const distinctChars = (token: string) => new Set(token).size;
 
 function forbiddenText(text: string, secrets: readonly string[]): string | null {
   if (text.length > MAX_TEXT_LENGTH) return `text longer than ${MAX_TEXT_LENGTH} characters`;
   let longTokens = 0;
   for (const token of text.split(/\s+/)) {
     if (token.length < LONG_TOKEN) continue;
-    if (distinctChars(token) < MIN_PAYLOAD_DISTINCT_CHARS) continue; // separator runs such as "-----"
-    const url = token.includes("://");
+    if (SEPARATOR_TOKEN.test(token)) continue; // separator runs such as "-----"
+    const url = LINK_TOKEN.test(token);
     if (token.length > (url ? MAX_URL_TOKEN_LENGTH : MAX_TOKEN_LENGTH)) return "unbroken token too long (encoded payload?)";
     if (!url && ++longTokens > MAX_LONG_TOKENS) return `more than ${MAX_LONG_TOKENS} tokens of ${LONG_TOKEN}+ characters (encoded payload?)`;
   }
@@ -115,8 +123,9 @@ function findForbidden(node: unknown, path: string, secrets: readonly string[]):
       const childPath = `${path}/${pointerToken(key)}`;
       if (CREDENTIAL_KEY.test(key)) return `${childPath}: credential field`;
       if (MODEL_CAPABILITY_KEYS.has(key)) return `${childPath}: Model Capability field (the registry is separate)`;
+      // the offending key is not echoed: it may itself be the secret, and messages reach logs
       const keyReason = forbiddenText(key, secrets);
-      if (keyReason) return `${childPath}: key ${keyReason}`;
+      if (keyReason) return `${path || "/"}: a key (${keyReason})`;
       const hit = findForbidden(value, childPath, secrets);
       if (hit) return hit;
     }

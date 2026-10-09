@@ -288,3 +288,51 @@ test("seed import applies the per-document caps, not only the bundle as a whole"
   await rejects(store.importSeed(seed), "FORBIDDEN_CONTENT");
   assert.deepEqual(tableCounts(file).commands, 0);
 });
+
+test("payload disguises the earlier guard exempted are refused: low-alphabet runs and non-http '://' tokens", async (t) => {
+  const { file, store } = await fixture(t);
+  const bytes = Buffer.from(Array.from({ length: 300 }, (_, i) => (i * 7919 + 13) % 256));
+  const base7 = [...bytes].map((b) => b.toString(7).padStart(3, "0")).join("").slice(0, 900);
+  for (const [name, value] of [
+    ["base-7 digit run", base7],
+    ["x:// salted base64", `x://${bytes.toString("base64")}`],
+    ["ftp:// salted base64", `ftp://${bytes.toString("base64")}`],
+    ["hex dump", bytes.toString("hex")],
+  ]) {
+    await refusedWithoutTrace(file, store.authoring.addRecipeVersion(newRecipe("sticker-v1", "0.1.0", { constraints: [value] })), "FORBIDDEN_CONTENT").catch((error) => {
+      throw new Error(`${name}: ${error.message}`);
+    });
+  }
+});
+
+test("a configured secret used as an object key is refused without echoing it", async (t) => {
+  const { store } = await fixture(t);
+  const secret = "or-test-KEYASKEY-0123456789abcdef";
+  const before = process.env.OPENROUTER_API_KEY;
+  process.env.OPENROUTER_API_KEY = secret;
+  t.after(() => (before === undefined ? delete process.env.OPENROUTER_API_KEY : (process.env.OPENROUTER_API_KEY = before)));
+  const recipe = newRecipe();
+  recipe.parameters = [{ name: "finish", type: "enum", required: false, options: ["glossy"], default: "glossy", description: "Surface.", [secret]: "x" }];
+  const error = await rejects(store.authoring.addRecipeVersion(recipe), "FORBIDDEN_CONTENT");
+  assert.equal(error.message.includes(secret), false, error.message);
+});
+
+test("positive controls: code-like snippets and long links in authoring copy pass", async (t) => {
+  const { store } = await fixture(t);
+  const longUrl = `https://example.com/${"guides/visual-commands/".repeat(8)}end`;
+  const recipe = newRecipe("sticker-v1", "0.1.0", {
+    constraints: [
+      "Respond only as JSON like {data:true,error:null}.",
+      "Return {status:ok, data:null, error:none}.",
+      `See [the long guide](${longUrl}) or <${longUrl}>.`,
+      `Questions: mailto:${"visual-command-lab-operators".repeat(3)}@example.com`,
+      "=".repeat(70),
+    ],
+  });
+  assert.equal(longUrl.length > 64 && longUrl.length < 512, true);
+  assert.equal((await store.authoring.addRecipeVersion(recipe)).created, true);
+  // real data: URIs in every form the RFC allows are still refused
+  for (const uri of ["data:,Hello", "data:;base64,SGVsbG8=", "data:image/png;name=x.png;base64,iVBOR", "data:image/svg+xml;utf8,<svg/>"]) {
+    await rejects(store.authoring.addRecipeVersion(newRecipe("sticker-v1", "0.2.0", { constraints: [`img ${uri}`] })), "FORBIDDEN_CONTENT");
+  }
+});

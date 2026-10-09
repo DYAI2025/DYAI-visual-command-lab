@@ -204,3 +204,20 @@ test("open-time error codes: unreachable parent, wrong-shaped migration table", 
   assert.equal(status.status, 2, status.stderr);
   assert.equal(JSON.parse(status.stderr.trim().split("\n").at(-1)).code, "SCHEMA_DRIFT");
 });
+
+test("db:migrate reports a write lock held by another connection as DATABASE_BUSY, not unreadable", (t) => {
+  const { dir, cleanup } = migratedDatabase();
+  t.after(cleanup);
+  const fresh = path.join(dir, "fresh.db");
+  const holder = new DatabaseSync(fresh);
+  // already in WAL mode, so opening succeeds and the lock is first hit by migrate's own BEGIN IMMEDIATE
+  holder.exec("PRAGMA journal_mode = WAL; CREATE TABLE placeholder (x INTEGER); BEGIN IMMEDIATE; INSERT INTO placeholder VALUES (1);");
+  try {
+    const result = spawnSync(process.execPath, ["scripts/db.mjs", "migrate", "--database", fresh], { encoding: "utf8" });
+    assert.equal(result.status, 2, result.stderr);
+    assert.equal(JSON.parse(result.stderr.trim().split("\n").at(-1)).code, "DATABASE_BUSY");
+  } finally {
+    holder.exec("ROLLBACK");
+    holder.close();
+  }
+});

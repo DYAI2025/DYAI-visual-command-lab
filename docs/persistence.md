@@ -81,15 +81,18 @@ route `/[locale]` and `/api/generate` read through the repositories.
 ## Forbidden content
 
 Before any write, and for each seed command and recipe before the import, the repository runs
-`src/server/persistence/content-guard.ts`. A hit is refused with `FORBIDDEN_CONTENT`. The guard checks
-only these mechanisms. It does not try to judge whether prose "looks like" a secret:
+`src/server/persistence/content-guard.ts`. A hit is refused with `FORBIDDEN_CONTENT`.
+
+**Threat model.** The guard catches content that arrives *by accident*: an operator, or an AI-generated candidate (DYAI-40), pastes a `data:` URI, an encoded image, a well-known credential or one of this server's own secrets into authoring data. An authenticated operator who *deliberately* disguises bytes or an unknown secret is out of scope, since such an operator could change the code as well. For that case only the size caps limit how much can be stored.
+
+The guard checks only these mechanisms. It does not try to judge whether prose "looks like" a secret:
 
 1. **Structure:** credential-named keys (`apiKey`, `secret`, `token`, `password`, `authorization`, …) and
    Model Capability keys (`providerModelId`, `allowlist`, `benchmarkStatus`, modalities, cost, privacy), at any depth.
 2. **This server's own secrets:** any text that contains the value of a configured secret environment variable.
    That means `OPENROUTER_API_KEY` and every variable whose name ends in `KEY`, `SECRET`, `TOKEN` or
    `PASSWORD`, if its value has 16 or more characters.
-3. **Fixed formats:** `data:` URIs, and the prefix-anchored credential formats in `CREDENTIAL_FORMATS`:
+3. **Fixed formats:** RFC 2397 `data:` URIs (`data:[type/subtype][;param]*,`; `{data:true,…}` in a code snippet is not one), and the prefix-anchored credential formats in `CREDENTIAL_FORMATS`:
    * `sk-or-v1-` (OpenRouter), `sk-proj-` / `sk-ant-`, Stripe `sk_/rk_live|test_`;
    * PEM private keys;
    * `AKIA…` (AWS), `AIza…` (Google), `xox?-` (Slack), `ghp_…` / `github_pat_…` (GitHub);
@@ -97,14 +100,18 @@ only these mechanisms. It does not try to judge whether prose "looks like" a sec
 4. **Size:**
    * 4000 characters per text;
    * per document: 32 KB per command, 64 KB per recipe, 8 KB per category;
-   * unbroken tokens of at most 64 characters (512 for tokens that contain `://`);
-   * at most two tokens of 40+ characters per text, URL tokens not counted.
+   * unbroken tokens of at most 64 characters;
+   * links are allowed up to 512 characters and do not count toward the next rule. A link is a token with `http(s)://` or `mailto:` at its start, or right after `(`, `[`, `<`, a quote or a Markdown `](`;
+   * at most two other tokens of 40+ characters per text.
 
-   Tokens with fewer than 8 distinct characters, such as separator lines (`-----`), are exempt from the
-   token rules. VC-01 copy stays far below these limits: its longest token is 24 characters and its
+   Separator lines made only of `-=_*~#.+` (such as `-----`) are not payload and skip the token rules. VC-01 copy stays far below these limits: its longest token is 24 characters and its
    largest document is 1.6 KB.
 
-**Not detected (by design):** a credential in an unknown format that is shorter than 65 characters and is not one of this server's own secrets. Examples are a generic bearer token or a password typed into prose. The closed contract schemas bound this, since no field exists for credentials. Encoded images need long unbroken high-entropy tokens to be useful, so they hit the size rules. A payload cut into short pieces only fits under 4000 characters per text.
+**Not detected (by design):**
+
+* A credential in an unknown format that is shorter than 65 characters and is not one of this server's own secrets, for example a generic bearer token or a password typed into prose.
+* A server secret that has been split, re-cased or spaced out.
+* Bytes deliberately disguised as short tokens or as link tokens. The closed contract schemas bound this, since no field exists for credentials. Encoded images need long unbroken high-entropy tokens to be useful, so they hit the size rules. A payload cut into short pieces only fits under 4000 characters per text.
 
 The checks are splits and single-pass regexes without overlapping quantifiers. A test asserts that
 adversarial 4000-character inputs finish in under 50 ms. Positive controls in the tests must pass. They
@@ -112,7 +119,8 @@ cover:
 
 * prose such as "basic troubleshooting", "Bearer bonds", "metadata:" and "Password: required…";
 * German text;
-* Markdown links and URLs in parentheses;
+* Markdown links, URLs in parentheses and long `mailto:` addresses;
+* `{data:true,…}` code snippets;
 * separator lines;
 * a 63-character token.
 
