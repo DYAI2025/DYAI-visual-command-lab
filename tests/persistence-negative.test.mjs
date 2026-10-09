@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { category, committedRegistry, migratedDatabase, newCommand, newRecipe, openStore, registryPort, rejects, seedBundle, seededStore, tableCounts } from "./helpers/persistence.mjs";
+import { category, committedRegistry, imageSamples, migratedDatabase, newCommand, newRecipe, openStore, registryPort, rejects, seedBundle, seededStore, tableCounts } from "./helpers/persistence.mjs";
 
 // DYAI-39 required negative tests. Each rejected write must name its reason (CatalogueStoreError
 // code) and leave every authoring table exactly as it was.
@@ -116,7 +116,7 @@ test("Model Capability documents, provider credentials and image bytes cannot en
     ["an OpenRouter key in command text", () => store.authoring.createDraftCommand({ command: newCommand("sticker", "sticker-v1", { tags: ["play", `sk-or-v1-${"a".repeat(40)}`] }), recipe: newRecipe() })],
     ["an OpenAI project key in a recipe constraint", () => store.authoring.addRecipeVersion(newRecipe("sticker-v1", "0.1.0", { constraints: [`Use sk-proj-${"Q".repeat(24)} for calls.`] }))],
     ["an image data URI as a thumbnail", () => store.authoring.createDraftCommand({ command: newCommand("sticker", "sticker-v1", { thumbnails: [{ fixtureFamily: "person", src: "data:image/png;base64,iVBORw0KGgo", alt: { en: "a", de: "a" } }] }), recipe: newRecipe() })],
-    ["raw base64 image bytes in a recipe", () => store.authoring.addRecipeVersion(newRecipe("sticker-v1", "0.1.0", { fixtureRefs: [Buffer.from(Array.from({ length: 300 }, (_, i) => (i * 131 + 7) % 256)).toString("base64")] }))],
+    ["raw base64 image bytes in a recipe", () => store.authoring.addRecipeVersion(newRecipe("sticker-v1", "0.1.0", { fixtureRefs: [imageSamples().PNG.toString("base64")] }))],
     ["a secret on a category", () => store.authoring.createCategory({ ...category("vault"), secret: "s3cr3t" })],
   ];
   for (const [name, write] of cases) {
@@ -152,14 +152,14 @@ test("credential and payload shapes a first guard missed are refused on every wr
   const { file, store } = await fixture(t);
   const draft = await store.authoring.createDraftCommand({ command: newCommand(), recipe: newRecipe() });
   // encoded binary has many distinct characters; a fixed byte sequence keeps the test deterministic
-  const b64 = Buffer.from(Array.from({ length: 300 }, (_, i) => (i * 7919 + 13) % 256)).toString("base64");
+  const b64 = imageSamples().PNG.toString("base64");
   const values = {
     "data URI with a parameter": `data:image/png;name=x.png;base64,${b64.slice(0, 40)}`,
     "SVG data URI": "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg'></svg>",
     "line-wrapped base64": Array.from({ length: 5 }, () => b64.slice(0, 76)).join("\n"),
-    "slash-prefixed base64 (JPEG starts with /9j/)": `/9j/${b64.slice(0, 300)}`,
+    "JPEG base64 (starts with /9j/)": imageSamples().JPEG.toString("base64"),
     "base64 wrapped at 50 with spaces": Array.from({ length: 5 }, (_, i) => b64.slice(i * 50, i * 50 + 50)).join(" "),
-    "base64url run": `${"A1b2-C3d4_".repeat(25)}`,
+    "base64url PNG": imageSamples().PNG.toString("base64url"),
     "Stripe secret key": `sk_live_${"a1B2".repeat(6)}`,
     "PEM private key": "-----BEGIN RSA PRIVATE KEY----- MIIB",
     "AWS access key id": "AKIA0123456789ABCDEF",
@@ -289,20 +289,44 @@ test("seed import applies the per-document caps, not only the bundle as a whole"
   assert.deepEqual(tableCounts(file).commands, 0);
 });
 
-test("payload disguises the earlier guard exempted are refused: low-alphabet runs and non-http '://' tokens", async (t) => {
+test("image bytes are refused in every common encoding and glued position", async (t) => {
   const { file, store } = await fixture(t);
-  const bytes = Buffer.from(Array.from({ length: 300 }, (_, i) => (i * 7919 + 13) % 256));
-  const base7 = [...bytes].map((b) => b.toString(7).padStart(3, "0")).join("").slice(0, 900);
-  for (const [name, value] of [
-    ["base-7 digit run", base7],
-    ["x:// salted base64", `x://${bytes.toString("base64")}`],
-    ["ftp:// salted base64", `ftp://${bytes.toString("base64")}`],
-    ["hex dump", bytes.toString("hex")],
-  ]) {
+  const cases = [];
+  for (const [format, bytes] of Object.entries(imageSamples())) {
+    const b64 = bytes.toString("base64");
+    cases.push(
+      [`${format} base64`, b64],
+      [`${format} base64url`, bytes.toString("base64url")],
+      [`${format} hex`, bytes.toString("hex")],
+      [`${format} base64 wrapped at 76`, b64.match(/.{1,76}/g).join("\n")],
+      [`${format} glued after x://`, `x://${b64}`],
+      [`${format} inside prose`, `Reference: ${b64.slice(0, 40)}… (truncated)`],
+    );
+  }
+  for (const uri of ["data:text/plain;name=notes%20v2.txt,hello", 'data:text/plain;charset="utf-8",hello', "data:x-world/x-vrml;base64,AAAA"]) cases.push([uri, `see ${uri}`]);
+  for (const [name, value] of cases) {
     await refusedWithoutTrace(file, store.authoring.addRecipeVersion(newRecipe("sticker-v1", "0.1.0", { constraints: [value] })), "FORBIDDEN_CONTENT").catch((error) => {
       throw new Error(`${name}: ${error.message}`);
     });
   }
+});
+
+test("positive controls: separators, tables, quoted links and non-image hashes pass", async (t) => {
+  const { store } = await fixture(t);
+  const url = `https://www.bundesregierung.de/${"breg-de/themen/digitalisierung/".repeat(3)}artikel`;
+  const constraints = [
+    "|------------------------|------------------------------------|---------|",
+    "|:----|:---:|----:|",
+    "─".repeat(80),
+    "—".repeat(80),
+    "═".repeat(80),
+    `Quelle: „${url}“ und «${url}» sowie **${url}**.`,
+    `See www.example.com/${"docs/".repeat(14)}index and /assets/${"nested/".repeat(10)}file.png`,
+    "commit 3f2a9c1d8e7b6a5f4e3d2c1b0a9f8e7d6c5b4a39 and sha256 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
+    "Respond only as JSON like {data:true,error:null}.",
+  ];
+  const created = await store.authoring.addRecipeVersion(newRecipe("sticker-v1", "0.1.0", { constraints }));
+  assert.equal(created.created, true);
 });
 
 test("a configured secret used as an object key is refused without echoing it", async (t) => {

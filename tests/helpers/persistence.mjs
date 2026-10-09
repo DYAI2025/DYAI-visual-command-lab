@@ -8,6 +8,7 @@ import path from "node:path";
 import { migrate, openDatabase } from "../../src/server/persistence/database.ts";
 import { openSqliteCatalogueStore } from "../../src/server/persistence/sqlite-store.ts";
 import { modelRegistry } from "../../src/server/models/index.ts";
+import { encodePng } from "./png.mjs";
 
 /** The committed VC-01 seed, read as the import CLI reads it (fresh copies every call). */
 export const seedBundle = () => ({
@@ -129,4 +130,15 @@ export async function rejects(promise, code) {
     throw new Error(`expected CatalogueStoreError ${code}, got ${error.name} ${error.code ?? ""}: ${error.message}`);
   }
   return error;
+}
+
+/** Real file headers (plus filler) of the image formats the content guard must recognise. */
+export function imageSamples() {
+  const tail = Buffer.from(Array.from({ length: 200 }, (_, i) => (i * 7919 + 13) % 256));
+  return {
+    PNG: Buffer.from(encodePng(8, 8, (x, y) => [x * 30, y * 30, 120])),
+    JPEG: Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x10, 0x4a, 0x46, 0x49, 0x46, 0x00, 0x01]), tail]),
+    GIF: Buffer.concat([Buffer.from("GIF89a\x01\x00\x01\x00", "latin1"), tail]),
+    WebP: Buffer.concat([Buffer.from("RIFF"), Buffer.from([0x24, 0, 0, 0]), Buffer.from("WEBPVP8 "), tail]),
+  };
 }

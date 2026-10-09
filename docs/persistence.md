@@ -85,44 +85,49 @@ Before any write, and for each seed command and recipe before the import, the re
 
 **Threat model.** The guard catches content that arrives *by accident*: an operator, or an AI-generated candidate (DYAI-40), pastes a `data:` URI, an encoded image, a well-known credential or one of this server's own secrets into authoring data. An authenticated operator who *deliberately* disguises bytes or an unknown secret is out of scope, since such an operator could change the code as well. For that case only the size caps limit how much can be stored.
 
-The guard checks only these mechanisms. It does not try to judge whether prose "looks like" a secret:
+The guard checks only these mechanisms. It does not judge whether a word "looks like" a secret or
+a payload:
 
 1. **Structure:** credential-named keys (`apiKey`, `secret`, `token`, `password`, `authorization`, …) and
-   Model Capability keys (`providerModelId`, `allowlist`, `benchmarkStatus`, modalities, cost, privacy), at any depth.
-2. **This server's own secrets:** any text that contains the value of a configured secret environment variable.
-   That means `OPENROUTER_API_KEY` and every variable whose name ends in `KEY`, `SECRET`, `TOKEN` or
-   `PASSWORD`, if its value has 16 or more characters.
-3. **Fixed formats:** RFC 2397 `data:` URIs (`data:[type/subtype][;param]*,`; `{data:true,…}` in a code snippet is not one), and the prefix-anchored credential formats in `CREDENTIAL_FORMATS`:
-   * `sk-or-v1-` (OpenRouter), `sk-proj-` / `sk-ant-`, Stripe `sk_/rk_live|test_`;
-   * PEM private keys;
-   * `AKIA…` (AWS), `AIza…` (Google), `xox?-` (Slack), `ghp_…` / `github_pat_…` (GitHub);
-   * JWTs, and URLs with `user:password@`.
-4. **Size:**
-   * 4000 characters per text;
-   * per document: 32 KB per command, 64 KB per recipe, 8 KB per category;
-   * unbroken tokens of at most 64 characters;
-   * links are allowed up to 512 characters and do not count toward the next rule. A link is a token with `http(s)://` or `mailto:` at its start, or right after `(`, `[`, `<`, a quote or a Markdown `](`;
-   * at most two other tokens of 40+ characters per text.
-
-   Separator lines made only of `-=_*~#.+` (such as `-----`) are not payload and skip the token rules. VC-01 copy stays far below these limits: its longest token is 24 characters and its
-   largest document is 1.6 KB.
+   Model Capability keys (`providerModelId`, `allowlist`, `benchmarkStatus`, modalities, cost, privacy) at any depth.
+   An offending key is reported without its text, because the key may itself be the secret.
+2. **This server's own secrets:** any text that contains the value of a configured secret environment variable
+   (`OPENROUTER_API_KEY`, and every variable whose name ends in `KEY`, `SECRET`, `TOKEN` or `PASSWORD`, if its
+   value has 16 or more characters).
+3. **Fixed formats:**
+   * RFC 2397 `data:` URIs, of the form `data:[type/subtype][;parameter]*,` with any parameter characters. A
+     `{data:true,…}` code snippet is not one.
+   * The prefix-anchored credential formats in `CREDENTIAL_FORMATS`: `sk-or-v1-` (OpenRouter), `sk-proj-` /
+     `sk-ant-`, Stripe `sk_/rk_live|test_`, PEM private keys, `AKIA…` (AWS), `AIza…` (Google), `xox?-` (Slack),
+     `ghp_…` / `github_pat_…` (GitHub), JWTs, and URLs with `user:password@`.
+4. **Image bytes:** every run of 16 or more base64/base64url characters (24 or more for hex) is decoded at its start.
+   The guard tries all alignments of the first unit, so a run glued to `x://` is still found. A run whose bytes
+   begin with an image file signature is refused. The signatures are PNG, JPEG, GIF, WebP, BMP, TIFF, ICO and
+   HEIF/AVIF. A pasted image starts with its signature, wrapped or not, raw or inside a `data:` URI. Separators,
+   Markdown tables, links in any quotes, paths and hashes are not images, so they pass.
+5. **Capacity:** at most 4000 characters per text. Per document, at most 32 KB for a command, 64 KB for a recipe
+   and 8 KB for a category. VC-01 copy stays far below this: its largest document is 1.6 KB.
 
 **Not detected (by design):**
 
-* A credential in an unknown format that is shorter than 65 characters and is not one of this server's own secrets, for example a generic bearer token or a password typed into prose.
+* A credential in an unknown format that is not one of this server's own secrets (for example a generic
+  bearer token, or a password typed into prose).
 * A server secret that has been split, re-cased or spaced out.
-* Bytes deliberately disguised as short tokens or as link tokens. The closed contract schemas bound this, since no field exists for credentials. Encoded images need long unbroken high-entropy tokens to be useful, so they hit the size rules. A payload cut into short pieces only fits under 4000 characters per text.
+* Image bytes without their file header, other binary data, and anything deliberately disguised.
 
-The checks are splits and single-pass regexes without overlapping quantifiers. A test asserts that
-adversarial 4000-character inputs finish in under 50 ms. Positive controls in the tests must pass. They
-cover:
+Within the capacity limits these cases are bounded by the closed contract schemas, which have no field for
+credentials or bytes.
 
-* prose such as "basic troubleshooting", "Bearer bonds", "metadata:" and "Password: required…";
-* German text;
-* Markdown links, URLs in parentheses and long `mailto:` addresses;
-* `{data:true,…}` code snippets;
-* separator lines;
-* a 63-character token.
+The checks are single-pass regexes without overlapping quantifiers and fixed-size decodes. A test
+asserts that adversarial 4000-character inputs finish in under 50 ms. Positive controls in the tests
+must pass:
+
+* prose ("basic troubleshooting", "Bearer bonds", "metadata:", "Password: required…", German text);
+* Markdown tables, ASCII and Unicode separator lines;
+* links in German quotes, guillemets and bold;
+* long `mailto:` addresses, `www.` links and paths;
+* git and sha256 hashes;
+* `{data:true,…}` snippets.
 
 Contract validation then applies the schemas and the provider-term scan. The schema contains no model,
 provider, secret or image table or column (`tests/persistence-schema.test.mjs`).

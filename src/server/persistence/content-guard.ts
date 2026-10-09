@@ -10,26 +10,18 @@ import { CatalogueStoreError } from "./errors.ts";
 // data. Out of scope: an authenticated operator who deliberately disguises bytes or an unknown secret
 // (that operator could equally change code); for that, the size caps bound how much can be stored.
 //
-// Only decidable mechanisms, no guessing whether prose "looks like" a secret:
+// Only decidable mechanisms, no guessing whether a word "looks like" a secret or a payload:
 //  1. structure: credential-named keys and Model Capability keys are refused at any depth;
 //  2. this server's own secrets: any text containing the value of a configured secret environment
 //     variable (OPENROUTER_API_KEY and every *KEY / *SECRET / *TOKEN / *PASSWORD variable of 16+ chars);
-//  3. fixed, prefix-anchored credential formats (CREDENTIAL_FORMATS) and `data:` URIs;
-//  4. size: 4000 characters per text, per-document byte caps, unbroken tokens of at most 64 characters
-//     (http(s):// and mailto: links: 512, and these do not count toward the next rule) and at most two
-//     other 40+ character tokens per text. Separator runs (only "-=_*~#.+" characters, such as "-----")
-//     are not payload and skip the token rules.
-// Not detected: a credential of an unknown format that is shorter than 65 characters and is not this
-// server's own secret (for example a generic bearer token or a password typed into prose). Encoded
-// binary must be long unbroken tokens to be useful, so it hits the size rules; a payload cut into short
-// pieces fits only under 4000 characters per text. Every check is a split or a single-pass regex without
-// overlapping quantifiers, so it is linear in the input.
+//  3. fixed formats: RFC 2397 data: URIs and prefix-anchored credential formats (CREDENTIAL_FORMATS);
+//  4. image bytes: every run of 16+ base64/base64url (24+ hex) characters is decoded at its start and
+//     refused when the bytes begin with an image file signature (IMAGE_SIGNATURES);
+//  5. capacity: 4000 characters per text and a byte cap per document.
+// Every check is a single-pass regex without overlapping quantifiers or a fixed-size decode, so it is
+// linear in the input.
 
 export const MAX_TEXT_LENGTH = 4000;
-export const MAX_TOKEN_LENGTH = 64;
-export const MAX_URL_TOKEN_LENGTH = 512;
-const LONG_TOKEN = 40;
-const MAX_LONG_TOKENS = 2;
 const MIN_SECRET_LENGTH = 16;
 export const MAX_DOCUMENT_BYTES = { command: 32 * 1024, recipe: 64 * 1024, category: 8 * 1024 } as const;
 export type GuardedKind = keyof typeof MAX_DOCUMENT_BYTES;
@@ -65,11 +57,46 @@ export const CREDENTIAL_FORMATS: readonly [string, RegExp][] = [
   ["JWT", /\beyJ[A-Za-z0-9_-]{8,64}\.eyJ[A-Za-z0-9_-]{8}/],
   ["URL with user:password", /\b[a-z][a-z0-9+.-]{0,20}:\/\/[^\s/:@]{1,64}:[^\s/@]{1,128}@/i],
 ];
-// data:[<type>/<subtype>][;param]*, — "data:true," in a code snippet is not a data: URI
-const DATA_URI = /\bdata:(?:[a-z]{1,20}\/[a-z0-9.+-]{1,80})?(?:;[a-z0-9._=-]{1,40}){0,8},/i;
-// a link: http(s):// or mailto: at the token start, or right after "(", "[", "<", a quote or a Markdown "]("
-const LINK_TOKEN = /(?:^|[([<"'`]|\]\()(?:https?:\/\/|mailto:)/i;
-const SEPARATOR_TOKEN = /^[-=_*~#.+]+$/;
+
+// RFC 2397: data:[<mediatype>][;<parameter>]*,<data>. A media type is token "/" token; a parameter
+// runs to the next ";" or ",". "{data:true,...}" in a code snippet has neither.
+const MEDIA_TOKEN = "[a-z0-9!#$&^_.+-]{1,80}";
+const DATA_URI = new RegExp(`\\bdata:(?:${MEDIA_TOKEN}/${MEDIA_TOKEN})?(?:;[^;,\\s]{1,200}){0,8},`, "i");
+
+function ascii(bytes: Uint8Array, from: number, to: number): string {
+  return String.fromCharCode(...bytes.subarray(from, to));
+}
+
+/** File signatures of common raster image formats. */
+export const IMAGE_SIGNATURES: readonly [string, (b: Uint8Array) => boolean][] = [
+  ["PNG", (b) => b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47],
+  ["JPEG", (b) => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff],
+  ["GIF", (b) => ascii(b, 0, 4) === "GIF8"],
+  ["WebP", (b) => ascii(b, 0, 4) === "RIFF" && ascii(b, 8, 12) === "WEBP"],
+  ["BMP", (b) => ascii(b, 0, 2) === "BM" && b[6] === 0 && b[7] === 0 && b[8] === 0 && b[9] === 0],
+  ["TIFF", (b) => (ascii(b, 0, 2) === "II" && b[2] === 42 && b[3] === 0) || (ascii(b, 0, 2) === "MM" && b[2] === 0 && b[3] === 42)],
+  ["ICO", (b) => b[0] === 0 && b[1] === 0 && b[2] === 1 && b[3] === 0 && b[4] > 0],
+  ["HEIF/AVIF", (b) => ascii(b, 4, 8) === "ftyp" && /^(?:heic|heix|hevc|mif1|msf1|avif|avis)$/.test(ascii(b, 8, 12))],
+];
+const BASE64_RUN = /[A-Za-z0-9+/_-]{16,}/g;
+const HEX_RUN = /[0-9a-fA-F]{24,}/g;
+
+/** The image format whose signature the first decoded bytes of an encoded run carry, if any. */
+function imageInRun(run: string, encoding: "base64" | "hex"): string | null {
+  // the run may be glued to preceding characters of the same alphabet (e.g. "x://iVBOR…" yields the
+  // run "//iVBOR…"), so try every alignment within the first encoding unit
+  const alignments = encoding === "base64" ? 4 : 2;
+  const width = encoding === "base64" ? 16 : 24;
+  for (let offset = 0; offset < alignments && offset + width <= run.length; offset++) {
+    let head = run.slice(offset, offset + width);
+    if (encoding === "base64") head = head.replace(/-/g, "+").replace(/_/g, "/");
+    const bytes = Buffer.from(head, encoding);
+    const hit = IMAGE_SIGNATURES.find(([, matches]) => matches(bytes));
+    if (hit) return hit[0];
+  }
+  return null;
+}
+
 const SECRET_ENV_NAME = /(?:^OPENROUTER_API_KEY$|KEY$|SECRET$|TOKEN$|PASSWORD$)/;
 
 /** Values of this server's secret environment variables (read at check time; never logged). */
@@ -79,24 +106,23 @@ function configuredSecrets(env: Record<string, string | undefined>): string[] {
     .map(([, value]) => (value as string).trim());
 }
 
-
 function forbiddenText(text: string, secrets: readonly string[]): string | null {
   if (text.length > MAX_TEXT_LENGTH) return `text longer than ${MAX_TEXT_LENGTH} characters`;
-  let longTokens = 0;
-  for (const token of text.split(/\s+/)) {
-    if (token.length < LONG_TOKEN) continue;
-    if (SEPARATOR_TOKEN.test(token)) continue; // separator runs such as "-----"
-    const url = LINK_TOKEN.test(token);
-    if (token.length > (url ? MAX_URL_TOKEN_LENGTH : MAX_TOKEN_LENGTH)) return "unbroken token too long (encoded payload?)";
-    if (!url && ++longTokens > MAX_LONG_TOKENS) return `more than ${MAX_LONG_TOKENS} tokens of ${LONG_TOKEN}+ characters (encoded payload?)`;
-  }
   if (DATA_URI.test(text)) return "data: URI";
   for (const [name, format] of CREDENTIAL_FORMATS) if (format.test(text)) return `credential (${name})`;
   if (secrets.some((secret) => text.includes(secret))) return "credential (a configured server secret)";
+  for (const [run] of text.matchAll(BASE64_RUN)) {
+    const image = imageInRun(run, "base64");
+    if (image) return `encoded ${image} image`;
+  }
+  for (const [run] of text.matchAll(HEX_RUN)) {
+    const image = imageInRun(run, "hex");
+    if (image) return `hex-encoded ${image} image`;
+  }
   return null;
 }
 
-/** Throws FORBIDDEN_CONTENT at the first credential, Model Capability fact, payload or oversize. */
+/** Throws FORBIDDEN_CONTENT at the first credential, Model Capability fact, image payload or oversize. */
 export function assertNoForbiddenContent(document: unknown, kind: GuardedKind, env: Record<string, string | undefined> = process.env): void {
   const size = Buffer.byteLength(JSON.stringify(document) ?? "", "utf8");
   if (size > MAX_DOCUMENT_BYTES[kind]) {
