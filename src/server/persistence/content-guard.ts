@@ -56,9 +56,9 @@ export const CREDENTIAL_FORMATS: readonly [string, RegExp][] = [
   ["Slack token", /\bxox[abposr]-[0-9]{6}/],
   ["GitHub token", /\b(?:gh[pousr]_[A-Za-z0-9]{30}|github_pat_[A-Za-z0-9_]{20})/],
   ["JWT", /\beyJ[A-Za-z0-9_-]{8,64}\.eyJ[A-Za-z0-9_-]{8}/],
-  // the user part excludes "?#&=." and the password "?#", so a nested URL inside a query string
-  // ("?next=https://host:8443&mail=a@b", also with %26/%3F) is not read as userinfo
-  ["URL with user:password", /\b[a-z][a-z0-9+.-]{0,20}:\/\/[^\s/:@?#&=.]{1,64}:[^\s/@?#]{1,128}@/i],
+  // only schemes that carry service credentials (connection strings); http(s) links are excluded on purpose:
+  // redirect and safelink URLs ("?next=https://host:8443&mail=a@b") cannot be told apart from userinfo
+  ["Connection string with user:password", /\b(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis|rediss|amqps?|mssql|sqlserver|ftps?|sftp|smtps?|ldaps?|ssh):\/\/[^\s/:@]{1,64}:[^\s/@]{1,128}@/i],
 ];
 
 // RFC 2397: data:[<mediatype>][;<parameter>]*,<data>. A media type is token "/" token; a parameter
@@ -68,7 +68,7 @@ const MEDIA_TOKEN = "[!#$%&'*+.^_`|~0-9a-z-]{1,80}";
 // a pasted data: URI carries base64 or percent-encoded data, or SVG/XML/HTML markup ("<svg ", "<svg>", "<?xml ",
 // "<!doctype ", "<html>"), right after the comma; prose such as "data:image/*, return a URL",
 // "data:image/png;base64,… in the response" or a "<base64>" / "<svg-markup>" placeholder does not
-const DATA_URI = new RegExp(`\\bdata:(?:${MEDIA_TOKEN}/${MEDIA_TOKEN})?(?:;[^;,\\s]{1,200}){0,8},(?=[A-Za-z0-9+/=%]|<(?:svg|html)[\\s>/]|<\\?xml\\s|<!doctype\\s)`, "i");
+const DATA_URI = new RegExp(`\\bdata:(?:${MEDIA_TOKEN}/${MEDIA_TOKEN})?(?:;[^,\\s]{1,1600})?,(?=[A-Za-z0-9+/=%]|<(?:svg|html)[\\s>/]|<\\?xml\\s|<!doctype\\s)`, "i");
 
 const JPEG_MARKERS = new Set([0xdb, 0xc0, 0xc2, 0xc4, 0xfe, ...Array.from({ length: 16 }, (_, i) => 0xe0 + i)]);
 // first bytes of the signatures below (PNG, JPEG, GIF, WebP, BMP, TIFF II/MM, ICO); HEIF/AVIF is
@@ -96,20 +96,21 @@ export const IMAGE_SIGNATURES: readonly [string, (b: Uint8Array, i: number) => b
 ];
 const BASE64_RUN = /[A-Za-z0-9+/_-]{16,}/g;
 const HEX_RUN = /[0-9a-fA-F]{24,}/g;
-
-/** Every regular expression the guard runs on authoring text (checked for nested unbounded quantifiers in tests). */
-export const GUARD_PATTERNS: readonly RegExp[] = [...CREDENTIAL_FORMATS.map(([, pattern]) => pattern), DATA_URI, BASE64_RUN, HEX_RUN];
+const JSON_SLASH = /\\\//g;
+const PERCENT_ESCAPE = /%(2F|2B|3D|3A|3B|2C)/gi;
+const BASE64URL_DASH = /-/g;
+const BASE64URL_UNDERSCORE = /_/g;
 
 /** Undo the JSON and URL escapes that would split an encoded run (linear, fixed replacements). */
 function unescapeRuns(text: string): string {
-  return text.replace(/\\\//g, "/").replace(/%(2F|2B|3D|3A|3B|2C)/gi, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)));
+  return text.replace(JSON_SLASH, "/").replace(PERCENT_ESCAPE, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)));
 }
 
 /** The image format whose signature occurs anywhere in the decoded bytes of an encoded run, if any. */
 function imageInRun(run: string, encoding: "base64" | "hex"): string | null {
   // decoding starts at each alignment of the first unit, so a signature after any prefix is found
   const unit = encoding === "base64" ? 4 : 2;
-  const normalized = encoding === "base64" ? run.replace(/-/g, "+").replace(/_/g, "/") : run;
+  const normalized = encoding === "base64" ? run.replace(BASE64URL_DASH, "+").replace(BASE64URL_UNDERSCORE, "/") : run;
   for (let offset = 0; offset < unit; offset++) {
     const usable = Math.floor((normalized.length - offset) / unit) * unit;
     if (usable < unit * 3) continue;
@@ -125,6 +126,23 @@ function imageInRun(run: string, encoding: "base64" | "hex"): string | null {
 
 const SECRET_ENV_NAME = /(?:^OPENROUTER_API_KEY$|KEY$|SECRET$|TOKEN$|PASSWORD$)/;
 
+/**
+ * Every regular expression in this module. tests/persistence-negative.test.mjs checks that the list is
+ * complete (against a scan of this file) and that no pattern can backtrack exponentially.
+ */
+export const GUARD_PATTERNS: readonly RegExp[] = [
+  CREDENTIAL_KEY,
+  ...CREDENTIAL_FORMATS.map(([, pattern]) => pattern),
+  DATA_URI,
+  BASE64_RUN,
+  HEX_RUN,
+  JSON_SLASH,
+  PERCENT_ESCAPE,
+  BASE64URL_DASH,
+  BASE64URL_UNDERSCORE,
+  SECRET_ENV_NAME,
+];
+
 /** Values of this server's secret environment variables (read at check time; never logged). */
 function configuredSecrets(env: Record<string, string | undefined>): string[] {
   return Object.entries(env)
@@ -134,8 +152,7 @@ function configuredSecrets(env: Record<string, string | undefined>): string[] {
 
 function forbiddenText(raw: string, secrets: readonly string[]): string | null {
   if (raw.length > MAX_TEXT_LENGTH) return `text longer than ${MAX_TEXT_LENGTH} characters`;
-  // every check sees the text as written and with JSON/URL escaping undone (the userinfo rule excludes
-  // ?#&=, so unescaped redirect and safelink URLs are not read as credentials)
+  // every check sees the text as written and with JSON/URL escaping undone
   const text = unescapeRuns(raw);
   if (DATA_URI.test(raw) || DATA_URI.test(text)) return "data: URI";
   for (const [name, format] of CREDENTIAL_FORMATS) if (format.test(raw) || format.test(text)) return `credential (${name})`;

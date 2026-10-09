@@ -100,12 +100,16 @@ a payload:
      `!#$%&'*+.^_`|~`, digits, letters, `-`). The comma must be followed directly by data: a base64 or
      percent-encoded character, or inline markup opening with `<svg` / `<html` (followed by a space, `>` or `/`), `<?xml ` or `<!doctype `. So prose
      such as "never return data:image/*, …", "data:image/png;base64,… in the response" or a `<base64>` / `<svg-markup>`
-     placeholder passes. Parameters are any non-whitespace characters up to the next `;` or `,`. The guard accepts at most 8 parameters of at most 200 characters each. A
+     placeholder passes. The parameter section (`;` …) is up to 1600 non-whitespace characters without a comma. A
      `{data:true,…}` code snippet is not a `data:` URI.
    * The prefix-anchored credential formats in `CREDENTIAL_FORMATS`: `sk-or-v1-` (OpenRouter), `sk-proj-` /
      `sk-ant-`, Stripe `sk_/rk_live|test_`, PEM private keys, `AKIA…` (AWS), `AIza…` (Google), `xox?-` (Slack),
-     `ghp_…` / `github_pat_…` (GitHub), JWTs, and URLs with `user:password@`.
-   * These formats are matched against the text as written and with the JSON/URL escaping of item 4 undone. The user part of the userinfo cannot contain `?`, `#`, `&`, `=` or `.`, and the password cannot contain `?` or `#`. So a query string with a colon and a later e-mail address is not a credential, and neither is a nested URL inside a query (`?next=https://host:8443&mail=a@b`, also with `%26`/`%3F`). A password containing `?` or `#`, and a user name containing one of the excluded characters, are not detected.
+     `ghp_…` / `github_pat_…` (GitHub), JWTs, and connection strings with `user:password@` for service schemes
+     (`postgres(ql)`, `mysql`, `mariadb`, `mongodb(+srv)`, `redis(s)`, `amqp(s)`, `mssql`, `sqlserver`, `ftp(s)`,
+     `sftp`, `smtp(s)`, `ldap(s)`, `ssh`).
+   * These formats are matched against the text as written and with the JSON/URL escaping of item 4 undone.
+     `http(s)` URLs are deliberately not checked for userinfo. Redirect and safelink links such as
+     `?next=https://host:8443&mail=a@b` cannot be told apart from `user:password@` lexically.
 4. **Image bytes:**
    * The guard first undoes JSON (`\/`) and URL (`%2F`, `%2B`, `%3D`, `%3A`,
      `%3B`, `%2C`) escaping.
@@ -129,8 +133,8 @@ a payload:
 * A server secret that has been split, re-cased or spaced out.
 * Image bytes without their file header, other binary data, and other encodings such as base32.
 * Hex dumps with separators: the default `xxd` output, `xxd -i` C arrays, `\x89\x50` byte literals.
-* A credential URL whose `@` is percent-encoded (`%40`, as in full `encodeURIComponent` output). JSON-escaped
-  (`\/`) and `%2F`/`%3A`-escaped credential URLs are found. A configured server secret is also found JSON-escaped
+* `user:password@` in an `http(s)` URL, and a connection string whose `@` is percent-encoded (`%40`, as in
+  full `encodeURIComponent` output). JSON-escaped (`\/`) and `%2F`/`%3A`-escaped connection strings are found. A configured server secret is also found JSON-escaped
   or fully `encodeURIComponent`-encoded.
 * Escaping other than the listed JSON `\/` and `%XX` forms, such as HTML entities (`&#x2F;`) or double URL encoding
   (`%252F`).
@@ -143,9 +147,14 @@ The checks are single-pass regexes without overlapping quantifiers plus a linear
 byte compares.
 
 * **Gated:** catastrophic backtracking, the failure that would block the server for seconds. Two tests guard it:
-  * A structural test checks every pattern the guard runs (`GUARD_PATTERNS`). None may repeat a group that itself
-    contains an unbounded quantifier (`+`, `*`, `{n,}`). This is the shape behind exponential backtracking, and
-    the test's detector is canaried on known-bad patterns.
+  * A structural test checks every regular expression in `content-guard.ts`. A scan of the source must find
+    exactly the patterns registered in `GUARD_PATTERNS`. Each pattern must follow two rules:
+    * no group that repeats more than once (`+`, `*`, `{n,}`, `{n,m}` with m > 1, `{n}` with n > 1) may contain a
+      quantifier or an alternation;
+    * at most one unbounded quantifier per pattern.
+
+    This excludes nested and alternated repetition, the shapes behind exponential backtracking. The detector is
+    canaried on known-bad patterns (`(a+)+`, `(a+){10}`, `(a|a)+`, `a+b+`).
   * A timing test runs adversarial 4000-character texts, including one per credential prefix with a long run that
     has no terminator. Each may cost at most 8× a random encoded text of the same length, with a 10 ms floor,
     measured interleaved, minimum of several runs.

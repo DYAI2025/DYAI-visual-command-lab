@@ -166,7 +166,7 @@ test("credential and payload shapes a first guard missed are refused on every wr
     "google api key": `AIza${"B".repeat(35)}`,
     "slack token": "xoxb-1234567890-abcdefghij",
     "jwt": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
-    "url with credentials": "https://user:s3cret@example.com/x",
+    "connection string with credentials": "mongodb+srv://svc:s3cretPass@cluster0.example.net/db",
     "oversized text": "a ".repeat(2100),
   };
   for (const [name, value] of Object.entries(values)) {
@@ -447,59 +447,135 @@ test("positive controls: prose about data: URIs, templates and query strings wit
     "Never inline data:image/svg+xml,<svg-markup>; link a hosted file.",
     "Kein data:image/svg+xml,<svg-Code> einbetten, sondern eine URL verlinken.",
     "Login: https://login.example.com/?next=https://app.example.com:8443%26login_hint%3Dben@example.de",
+    "OAuth: https://accounts.example.com/auth?redirect_uri=http://localhost:3000&login_hint=ben@example.de",
+    "Redirect: ?next=https://host:8443&mail=a@b",
   ];
   assert.equal((await store.authoring.addRecipeVersion(newRecipe("sticker-v1", "0.1.0", { constraints }))).created, true);
   // while a real credential URL is refused, as written and JSON- or %2F/%3A-escaped
   for (const [version, url] of [
     ["0.2.0", "postgres://admin:hunter2pass@db.example.com:5432/app"],
     ["0.3.0", '{"db":"postgres:\\/\\/admin:hunter2pass@db.example.com:5432\\/app"}'],
-    ["0.4.0", "https%3A%2F%2Fadmin%3Ahunter2pass@db.example.com"],
+    ["0.4.0", "postgresql%3A%2F%2Fadmin%3Ahunter2pass@db.example.com"],
   ]) {
     await rejects(store.authoring.addRecipeVersion(newRecipe("sticker-v1", version, { constraints: [url] })), "FORBIDDEN_CONTENT");
   }
 });
 
-/** Groups repeated by a quantifier whose body itself has an unbounded quantifier (+, *, {n,}). */
-function nestedUnboundedQuantifiers(source) {
-  const findings = [];
+/**
+ * Backtracking shape check for one regex source. Returns violations of two rules:
+ *  - a group repeated more than once (+, *, {n,}, {n,m} with m>1, {n} with n>1) may not contain any
+ *    quantifier or alternation (the shapes behind exponential backtracking, incl. "(a+){4}", "(a|a)+");
+ *  - at most one unbounded quantifier (+, *, {n,}) per pattern.
+ */
+function backtrackingRisks(source) {
+  const risks = [];
   const stack = [];
   let inClass = false;
+  let unbounded = 0;
+  const quantifierAt = (i) => {
+    const rest = source.slice(i);
+    const m = /^(?:([*+?])|\{(\d+)(,(\d*))?\})/.exec(rest);
+    if (!m) return null;
+    if (m[1]) return { text: m[0], repeats: m[1] !== "?", unbounded: m[1] !== "?" };
+    const min = Number(m[2]);
+    const max = m[3] === undefined ? min : m[4] === "" ? Infinity : Number(m[4]);
+    return { text: m[0], repeats: max > 1, unbounded: max === Infinity };
+  };
   for (let i = 0; i < source.length; i++) {
     const c = source[i];
     if (c === "\\") {
       i += 1;
+      const q = quantifierAt(i + 1);
+      if (q) {
+        if (q.unbounded) unbounded += 1;
+        if (stack.length) stack[stack.length - 1].inner = true;
+      }
       continue;
     }
     if (inClass) {
-      if (c === "]") inClass = false;
+      if (c === "]") {
+        inClass = false;
+        const q = quantifierAt(i + 1);
+        if (q) {
+          if (q.unbounded) unbounded += 1;
+          if (stack.length) stack[stack.length - 1].inner = true;
+        }
+      }
       continue;
     }
     if (c === "[") inClass = true;
-    else if (c === "(") stack.push({ start: i, unbounded: false });
+    else if (c === "(") stack.push({ start: i, inner: false });
+    else if (c === "|" && stack.length) stack[stack.length - 1].inner = true;
     else if (c === ")") {
       const group = stack.pop();
-      const after = source.slice(i + 1);
-      const repeated = /^(?:[*+]|\{\d+,\d*\})/.exec(after);
-      const bounded = /^\{(\d+),(\d+)\}/.exec(after);
-      const repeats = repeated && !(bounded && Number(bounded[2]) <= 1);
-      if (repeats && group.unbounded) findings.push(source.slice(group.start, i + 1 + repeated[0].length));
-      if (group.unbounded && stack.length) stack[stack.length - 1].unbounded = true;
-    } else if ((c === "+" || c === "*" || (c === "{" && /^\{\d+,\}/.test(source.slice(i)))) && stack.length) {
-      stack[stack.length - 1].unbounded = true;
+      const q = quantifierAt(i + 1);
+      if (q && q.repeats && group.inner) risks.push(source.slice(group.start, i + 1) + q.text);
+      if (q) {
+        if (q.unbounded) unbounded += 1;
+        if (stack.length) stack[stack.length - 1].inner = true;
+      }
+      if (group.inner && stack.length) stack[stack.length - 1].inner = true;
+    } else if (!"*+?{}".includes(c)) {
+      const q = quantifierAt(i + 1);
+      if (q) {
+        if (q.unbounded) unbounded += 1;
+        if (stack.length) stack[stack.length - 1].inner = true;
+      }
     }
   }
-  return findings;
+  if (unbounded > 1) risks.push(`${unbounded} unbounded quantifiers`);
+  return risks;
 }
 
-test("no guard pattern repeats a group that contains an unbounded quantifier (structural backtracking check)", async () => {
-  const { GUARD_PATTERNS } = await import("../src/server/persistence/content-guard.ts");
-  // canary: the detector flags the shapes it exists to catch, and passes bounded nesting
-  for (const bad of [/(?:[a-z]+)+=/, /(?:[A-Za-z0-9+/_-]{40,}={0,2}\s*\n\s*){3,}/, /(a*)*b/, /(?:x(?:y+))+/]) {
-    assert.ok(nestedUnboundedQuantifiers(bad.source).length > 0, `detector misses ${bad.source}`);
+/** Regex literals and RegExp constructors in a module's source (comment lines skipped). */
+function regexesInSource(code) {
+  const literals = [];
+  let constructors = 0;
+  for (const line of code.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("//") || trimmed.startsWith("*") || trimmed.startsWith("/**")) continue;
+    constructors += line.split("new RegExp(").length - 1;
+    for (let i = 0; i < line.length; i++) {
+      if (line[i] === '"' || line[i] === "'" || line[i] === "`") {
+        const quote = line[i];
+        for (i += 1; i < line.length && line[i] !== quote; i++) if (line[i] === "\\") i += 1;
+        continue;
+      }
+      if (line[i] !== "/") continue;
+      const before = line.slice(0, i).trimEnd();
+      if (before !== "" && !/[=(,:[!&|?{};]$|\breturn$/.test(before)) continue;
+      let j = i + 1;
+      let cls = false;
+      for (; j < line.length; j++) {
+        if (line[j] === "\\") { j += 1; continue; }
+        if (cls) { if (line[j] === "]") cls = false; continue; }
+        if (line[j] === "[") cls = true;
+        else if (line[j] === "/") break;
+      }
+      if (j >= line.length || j === i + 1) continue;
+      literals.push(line.slice(i + 1, j));
+      i = j;
+    }
   }
-  assert.deepEqual(nestedUnboundedQuantifiers(/(?:;[^;,\s]{1,200}){0,8},/.source), []);
-  assert.ok(GUARD_PATTERNS.length >= 12);
-  for (const pattern of GUARD_PATTERNS) assert.deepEqual(nestedUnboundedQuantifiers(pattern.source), [], pattern.source);
+  return { literals, constructors };
+}
+
+test("every guard regex is registered and none can backtrack exponentially (structural check)", async () => {
+  const fs = await import("node:fs");
+  const { GUARD_PATTERNS } = await import("../src/server/persistence/content-guard.ts");
+  // canaries: the detector flags the shapes it exists to catch, and passes what the guard uses
+  for (const bad of [/(?:[a-z]+)+=/, /(?:x\s*\n\s*){3,}/, /(a*)*b/, /(a+){10}b/, /(?:[0-9]+){6}x/, /(a|a)+b/, /(?:\w|\d)*x/, /a+b+/]) {
+    assert.ok(backtrackingRisks(bad.source).length > 0, `detector misses ${bad.source}`);
+  }
+  for (const fine of [/(?:;[^,\s]{1,1600})?,/, /\b(?:ab|cd)?x{1,64}/, /[A-Za-z0-9+/_-]{16,}/g]) {
+    assert.deepEqual(backtrackingRisks(fine.source), [], fine.source);
+  }
+  // completeness: every regex literal and RegExp constructor in the module is in GUARD_PATTERNS
+  const { literals, constructors } = regexesInSource(fs.readFileSync("src/server/persistence/content-guard.ts", "utf8"));
+  const registered = new Set(GUARD_PATTERNS.map((pattern) => pattern.source));
+  assert.deepEqual(literals.filter((source) => !registered.has(source)), [], "unregistered regex literal");
+  assert.equal(literals.length + constructors, GUARD_PATTERNS.length, "every regex in the module is registered exactly once");
+  for (const pattern of GUARD_PATTERNS) assert.deepEqual(backtrackingRisks(pattern.source), [], pattern.source);
 });
 
 test("a configured secret is found as written, JSON-escaped and encodeURIComponent-encoded", async (t) => {
