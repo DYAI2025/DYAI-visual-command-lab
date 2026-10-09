@@ -221,3 +221,62 @@ test("an archived command keeps reporting the recipe version it was archived wit
   assert.ok(error.issues.some((issue) => issue.code === "NON_POLISH_TRUTH_PRESERVING"));
   assert.equal((await f.store.authoring.getCommand("sticker")).lifecycle, "ARCHIVED");
 });
+
+test("operator reads are one snapshot even when another process commits between their statements", async (t) => {
+  const f = await fixture(t);
+  await f.store.authoring.createCategory(category("cat-a"));
+  await f.store.authoring.createCategory(category("cat-b"));
+  await f.store.authoring.createDraftCommand({ command: newCommand(), recipe: newRecipe(), categoryIds: ["cat-a"] });
+  const { DatabaseSync } = await import("node:sqlite");
+  const other = new DatabaseSync(f.file);
+  t.after(() => other.close());
+  // Another process commits a new revision with other categories exactly when the reader prepares its
+  // category query, i.e. between the reader's command-row read and its category read.
+  const original = DatabaseSync.prototype.prepare;
+  let armed = true;
+  DatabaseSync.prototype.prepare = function (sql) {
+    if (armed && this !== other && sql.startsWith("SELECT category_id FROM command_categories")) {
+      armed = false;
+      other.exec("BEGIN IMMEDIATE");
+      other.prepare("UPDATE commands SET revision = revision + 1, updated_at = 'x' WHERE id = 'sticker'").run();
+      other.prepare("DELETE FROM command_categories WHERE command_id = 'sticker'").run();
+      other.prepare("INSERT INTO command_categories VALUES ('sticker', 'cat-b')").run();
+      other.exec("COMMIT");
+    }
+    return original.call(this, sql);
+  };
+  let seen;
+  try {
+    seen = await f.store.authoring.getCommand("sticker");
+  } finally {
+    DatabaseSync.prototype.prepare = original;
+  }
+  assert.equal(armed, false, "the interleaved write happened");
+  assert.deepEqual([seen.revision, seen.categoryIds], [1, ["cat-a"]], "revision and categories from the same snapshot");
+  const after = await f.store.authoring.getCommand("sticker");
+  assert.deepEqual([after.revision, after.categoryIds], [2, ["cat-b"]], "the other process's commit is visible afterwards");
+});
+
+test("a write refused by a database rule is CONSTRAINT_VIOLATION; lock contention is DATABASE_BUSY", async (t) => {
+  const f = await fixture(t);
+  const created = await f.store.authoring.createDraftCommand({ command: newCommand(), recipe: newRecipe() });
+  const { DatabaseSync } = await import("node:sqlite");
+  const other = new DatabaseSync(f.file);
+  t.after(() => other.close());
+  // revision 2 already exists in the history (written behind the repository's back)
+  other.exec("INSERT INTO command_revisions SELECT command_id, 2, lifecycle, document, category_ids, recipe_version, reason, recorded_at FROM command_revisions WHERE command_id = 'sticker'");
+  const violation = await rejects(f.store.authoring.transitionCommand("sticker", "TESTING", { expectedRevision: created.revision }), "CONSTRAINT_VIOLATION");
+  assert.equal(violation.unavailable, false);
+  assert.equal((await f.store.authoring.getCommand("sticker")).lifecycle, "DRAFT", "rolled back");
+
+  const busyStore = openStore(f.file, { busyTimeoutMs: 20 });
+  t.after(() => busyStore.close());
+  other.exec("BEGIN IMMEDIATE");
+  try {
+    const busy = await rejects(busyStore.authoring.createCategory(category("later")), "DATABASE_BUSY");
+    assert.equal(busy.transient, true);
+  } finally {
+    other.exec("ROLLBACK");
+  }
+  assert.equal((await busyStore.authoring.createCategory(category("later"))).id, "later", "succeeds once the lock is gone");
+});

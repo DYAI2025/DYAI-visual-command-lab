@@ -45,6 +45,8 @@ CREATE TABLE recipe_versions (
   version TEXT NOT NULL CHECK (version GLOB '[0-9]*.[0-9]*.[0-9]*'),
   truth_mode TEXT NOT NULL CHECK (truth_mode IN ('creative_entertainment', 'truth_preserving_edit', 'evidence_grounded_workflow')),
   document TEXT NOT NULL CHECK (json_valid(document)),
+  -- where the version came from: the seed import or the authoring repository
+  origin TEXT NOT NULL CHECK (origin IN ('vc01_import', 'authored')),
   created_at TEXT NOT NULL,
   PRIMARY KEY (recipe_id, version),
   CHECK (json_extract(document, '$.recipeId') = recipe_id),

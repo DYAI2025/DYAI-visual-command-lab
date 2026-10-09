@@ -156,6 +156,7 @@ test("credential and payload shapes a first guard missed are refused on every wr
     "data URI with a parameter": `data:image/png;name=x.png;base64,${b64.slice(0, 40)}`,
     "SVG data URI": "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg'></svg>",
     "line-wrapped base64": Array.from({ length: 5 }, () => b64.slice(0, 76)).join("\n"),
+    "base64 wrapped at 50 with spaces": Array.from({ length: 5 }, (_, i) => b64.slice(i * 50, i * 50 + 50)).join(" "),
     "base64url run": `${"A1b2-C3d4_".repeat(25)}`,
     "lowercase bearer": "authorization: bearer abcdef0123456789xyz",
     "basic auth": "Authorization: Basic dXNlcjpwYXNzd29yZDEyMw==",
@@ -184,7 +185,9 @@ test("positive controls: ordinary authoring prose passes the content guard", asy
     "Die Grundidee bleibt erhalten: klare Linien, keine erfundenen Logos, sichtbare Mängel bleiben.",
     "Model the scene like a miniature diorama (tilt-shift), not a photo of a real place.",
     "Secret ingredient: patience. Password-style captions are not used.",
-    "x".repeat(150),
+    `A token at the length limit: ${"x".repeat(63)}.`,
+    "Keep metadata: title, author and date. Password: required for the export dialog. Token: 12345678 credits.",
+    "Bearer bonds and basic instrumentalisation are period props; see https://example.com/reference/a-rather-long-path/that-keeps-going/and-going/still-a-url",
   ];
   const command = newCommand("sticker", "sticker-v1", {
     display: { en: { name: "Sticker", description: prose[0] }, de: { name: "Sticker", description: prose[1] } },
@@ -193,4 +196,54 @@ test("positive controls: ordinary authoring prose passes the content guard", asy
   const recipe = newRecipe("sticker-v1", "0.1.0", { constraints: prose, baseIntent: `${prose[0]} ${"Long but plain description. ".repeat(60)}` });
   const created = await store.authoring.createDraftCommand({ command, recipe });
   assert.deepEqual(created.command, command);
+});
+
+test("the update guard scans every field of the command, not only the display text", async (t) => {
+  const { file, store } = await fixture(t);
+  const draft = await store.authoring.createDraftCommand({ command: newCommand(), recipe: newRecipe() });
+  const key = `sk-or-v1-${"c".repeat(40)}`;
+  const placements = {
+    "job.de": (c) => (c.job.de = `Mach einen Sticker ${key}`),
+    "thumbnail alt": (c) => (c.thumbnails = [{ fixtureFamily: "person", src: "/fixtures/a.png", alt: { en: key, de: "Bild" } }]),
+    "evidence ref": (c) => (c.evidence = { observation: "proposed", status: "source_linked", refs: [key] }),
+    "display.de.name": (c) => (c.display.de.name = key),
+  };
+  for (const [name, place] of Object.entries(placements)) {
+    const command = newCommand();
+    place(command);
+    await refusedWithoutTrace(file, store.authoring.updateCommand("sticker", { command, categoryIds: [], expectedRevision: draft.revision }), "FORBIDDEN_CONTENT").catch((error) => {
+      throw new Error(`${name}: ${error.message}`);
+    });
+  }
+});
+
+test("the content guard stays linear on adversarial input (no catastrophic backtracking)", async () => {
+  const { assertNoForbiddenContent, MAX_TEXT_LENGTH } = await import("../src/server/persistence/content-guard.ts");
+  const adversarial = [
+    "A".repeat(63) + "\n".repeat(MAX_TEXT_LENGTH - 64) + "x",
+    ("A".repeat(39) + " \n ").repeat(90),
+    ("data:" + "a".repeat(60) + " ").repeat(60),
+    ("bearer " + "a".repeat(15) + " ").repeat(170),
+    ("http://" + "a".repeat(40) + ":").repeat(80),
+    ("eyJ" + "a".repeat(60) + " ").repeat(60),
+    (" ").repeat(MAX_TEXT_LENGTH),
+  ];
+  for (const text of adversarial) {
+    assert.ok(text.length <= MAX_TEXT_LENGTH, `${text.length}`);
+    const started = performance.now();
+    try {
+      assertNoForbiddenContent({ text }, "command");
+    } catch {
+      // refused or accepted: only the time matters here
+    }
+    const ms = performance.now() - started;
+    assert.ok(ms < 50, `${JSON.stringify(text.slice(0, 30))}… took ${ms.toFixed(1)} ms`);
+  }
+});
+
+test("non-string ids are refused as input errors, not raw driver errors", async (t) => {
+  const { store } = await fixture(t);
+  for (const id of [undefined, null, 42, { id: "x" }]) {
+    await rejects(store.authoring.getCommand(id), "VALIDATION_FAILED");
+  }
 });

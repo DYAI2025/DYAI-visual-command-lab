@@ -181,3 +181,26 @@ test("db:status reports an unmigrated database instead of crashing", (t) => {
   assert.equal(status.migrated, false);
   assert.deepEqual(status.migrations.map((m) => m.applied), MIGRATIONS.map(() => false));
 });
+
+test("open-time error codes: unreachable parent, wrong-shaped migration table", async (t) => {
+  const { dir, file, cleanup } = migratedDatabase();
+  t.after(() => {
+    fs.chmodSync(path.join(dir, "locked"), 0o755);
+    cleanup();
+  });
+  const locked = path.join(dir, "locked");
+  fs.mkdirSync(locked);
+  fs.copyFileSync(file, path.join(locked, "catalogue.db"));
+  fs.chmodSync(locked, 0o000);
+  if (process.getuid?.() !== 0) {
+    await rejects(Promise.resolve().then(() => openStore(path.join(locked, "catalogue.db"))), "DATABASE_UNREADABLE");
+  }
+  const shaped = path.join(dir, "shaped.db");
+  const raw = new DatabaseSync(shaped);
+  raw.exec("CREATE TABLE schema_migrations (name TEXT)");
+  raw.close();
+  await rejects(Promise.resolve().then(() => openStore(shaped)), "SCHEMA_DRIFT");
+  const status = spawnSync(process.execPath, ["scripts/db.mjs", "status", "--database", shaped], { encoding: "utf8" });
+  assert.equal(status.status, 2, status.stderr);
+  assert.equal(JSON.parse(status.stderr.trim().split("\n").at(-1)).code, "SCHEMA_DRIFT");
+});

@@ -71,8 +71,10 @@ export interface AuthoringRepository {
   listRecipeVersions(recipeId: string): Promise<string[]>;
 
   /**
-   * Creates a DRAFT command. `recipe`, when given, is added in the same transaction and must carry the
-   * command's recipeId; otherwise the command's recipeId must already exist.
+   * Creates a DRAFT command. `recipe`, when given, must carry the command's recipeId: a new recipe id is
+   * added in the same transaction; for an existing recipe id it must be the current version
+   * (RECIPE_VERSION_NOT_CURRENT otherwise; creating a command never moves what other commands execute).
+   * Without `recipe`, the command's recipeId must already exist.
    */
   createDraftCommand(input: { command: CommandRecord; categoryIds?: string[]; recipe?: Recipe }): Promise<AuthoredCommand>;
   /** Replaces a DRAFT or TESTING command's record and categories (optimistic: expectedRevision). */

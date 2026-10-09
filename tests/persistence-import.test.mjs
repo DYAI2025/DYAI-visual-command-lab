@@ -211,3 +211,48 @@ test("a first import refuses a seed slash that an authored command with another 
   assert.deepEqual(error.conflicts, ["command mindmap: /mindmap already belongs to sticker"]);
   assert.deepEqual(tableCounts(file), counts, "nothing imported");
 });
+
+test("a seed recipe id already authored before the first import is a conflict, even with identical content", async (t) => {
+  for (const [label, authored, expected] of [
+    ["identical version", (s) => s.recipes.recipes.find((r) => r.recipeId === "actionfigure-v1"), /recipe actionfigure-v1@0\.1\.0: persisted as an authored version, not imported from the seed/],
+    ["other version", (s) => ({ ...s.recipes.recipes.find((r) => r.recipeId === "mindmap-v1"), version: "0.2.0" }), /recipe mindmap-v1: already authored \(0\.2\.0\) before the seed import/],
+  ]) {
+    const { file, cleanup } = migratedDatabase();
+    t.after(cleanup);
+    const store = openStore(file);
+    t.after(() => store.close());
+    await store.authoring.addRecipeVersion(authored(seedBundle()));
+    const counts = tableCounts(file);
+    const error = await rejects(store.importSeed(seedBundle()), "IMPORT_CONFLICT");
+    assert.match(error.conflicts.join("\n"), expected, label);
+    assert.deepEqual(tableCounts(file), counts, `${label}: nothing imported`);
+  }
+});
+
+test("after the bootstrap, a seed entry swapped for an authored recipe version is a conflict", async (t) => {
+  const { file, cleanup } = migratedDatabase();
+  t.after(cleanup);
+  const store = openStore(file);
+  t.after(() => store.close());
+  await store.importSeed(seedBundle());
+  const authored = { ...seedBundle().recipes.recipes.find((r) => r.recipeId === "actionfigure-v1"), version: "9.9.9" };
+  await store.authoring.addRecipeVersion(authored);
+  const swapped = seedBundle();
+  swapped.recipes.recipes = swapped.recipes.recipes.map((r) => (r.recipeId === "actionfigure-v1" ? authored : r));
+  const error = await rejects(store.importSeed(swapped), "IMPORT_CONFLICT");
+  assert.deepEqual(error.conflicts, ["recipe actionfigure-v1@9.9.9: persisted as an authored version, not imported from the seed"]);
+  // and authoring newer versions after the bootstrap does not make the unchanged seed conflict
+  const report = await store.importSeed(seedBundle());
+  assert.equal(report.recipesUnchanged, 3);
+});
+
+test("a first import refuses a seed alias that an authored command owns", async (t) => {
+  const { file, cleanup } = migratedDatabase();
+  t.after(cleanup);
+  const store = openStore(file);
+  t.after(() => store.close());
+  const sticker = newCommand("sticker", "sticker-v1", { aliases: [{ slash: "/learningcomic", kind: "translation", publicUse: "allowed" }] });
+  await store.authoring.createDraftCommand({ command: sticker, recipe: newRecipe() });
+  const error = await rejects(store.importSeed(seedBundle()), "IMPORT_CONFLICT");
+  assert.deepEqual(error.conflicts, ["command lerncomic: /learningcomic already belongs to sticker"]);
+});

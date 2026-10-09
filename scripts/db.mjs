@@ -7,7 +7,8 @@
 // --database defaults to DATABASE_URL (a file: URL). The VC-01 JSON documents are read here, at the
 // import boundary, and nowhere on the runtime path: after import the database is the runtime truth
 // and the JSON is not written back (no dual-write). The import bootstraps once; re-running it with the
-// same seed is a no-op, and a seed with changed or new entries is refused as a whole (IMPORT_CONFLICT),
+// same seed changes no catalogue content (it records an import run), and a seed with changed or new
+// entries is refused as a whole (IMPORT_CONFLICT),
 // never merged or published.
 
 import fs from "node:fs";
@@ -89,6 +90,11 @@ try {
 } catch (error) {
   if (error instanceof CatalogueStoreError) {
     console.error(JSON.stringify({ event: "db.error", code: error.code, message: error.message, conflicts: error.conflicts, issues: error.issues }));
+    process.exit(2);
+  }
+  if (error?.code === "ERR_SQLITE_ERROR") {
+    // a database this CLI cannot work with (wrong shape, I/O): reported, not a stack trace
+    console.error(JSON.stringify({ event: "db.error", code: "DATABASE_UNREADABLE", message: error.message }));
     process.exit(2);
   }
   throw error;

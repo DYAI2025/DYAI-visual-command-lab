@@ -14,10 +14,18 @@ const checksum = (migration: Migration) => createHash("sha256").update(migration
  * Opens the SQLite file. `create: false` (the runtime) refuses a path that does not exist instead of
  * silently creating an empty database; only the migrate command creates one.
  */
-export function openDatabase(file: string, { create }: { create: boolean }): Database {
+export function openDatabase(file: string, { create, busyTimeoutMs = 5000 }: { create: boolean; busyTimeoutMs?: number }): Database {
   if (!path.isAbsolute(file)) throw new CatalogueStoreError("CONFIG_INVALID", "database path must be absolute");
-  if (!create && !fs.existsSync(file)) {
-    throw new CatalogueStoreError("DATABASE_MISSING", "configured database file does not exist; run `npm run db:migrate`");
+  if (!create) {
+    try {
+      fs.statSync(file);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        throw new CatalogueStoreError("DATABASE_MISSING", "configured database file does not exist; run `npm run db:migrate`");
+      }
+      // e.g. EACCES on a parent directory: the file may exist, it just cannot be reached
+      throw new CatalogueStoreError("DATABASE_UNREADABLE", `database file cannot be reached (${(error as NodeJS.ErrnoException).code})`);
+    }
   }
   let db: DatabaseSync;
   try {
@@ -27,13 +35,17 @@ export function openDatabase(file: string, { create }: { create: boolean }): Dat
     throw new CatalogueStoreError("DATABASE_UNREADABLE", `database cannot be opened (${(error as Error).message})`);
   }
   try {
-    db.exec("PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
+    db.exec(`PRAGMA busy_timeout = ${Math.max(0, Math.trunc(busyTimeoutMs))}; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;`);
     const check = db.prepare("PRAGMA quick_check").get() as { quick_check?: string } | undefined;
     if (check?.quick_check !== "ok") throw new CatalogueStoreError("DATABASE_CORRUPT", "integrity check failed");
   } catch (error) {
     db.close();
     if (error instanceof CatalogueStoreError) throw error;
-    throw new CatalogueStoreError("DATABASE_CORRUPT", `database cannot be read (${(error as Error).message})`);
+    // SQLITE_CORRUPT (11) / SQLITE_NOTADB (26) mean a damaged file; anything else (read-only, I/O,
+    // cannot open) means it cannot be used here
+    const primary = ((error as { errcode?: number }).errcode ?? -1) & 0xff;
+    const code = primary === 11 || primary === 26 ? "DATABASE_CORRUPT" : "DATABASE_UNREADABLE";
+    throw new CatalogueStoreError(code, `database cannot be read (${(error as Error).message})`);
   }
   return db;
 }
@@ -72,7 +84,11 @@ function expectedSchema(): string {
 function recordedMigrations(db: Database): { id: string; checksum: string }[] | null {
   const table = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'").get();
   if (!table) return null;
-  return db.prepare("SELECT id, checksum FROM schema_migrations ORDER BY id").all() as { id: string; checksum: string }[];
+  try {
+    return db.prepare("SELECT id, checksum FROM schema_migrations ORDER BY id").all() as { id: string; checksum: string }[];
+  } catch {
+    throw new CatalogueStoreError("SCHEMA_DRIFT", "schema_migrations table has an unexpected shape");
+  }
 }
 
 function compare(db: Database): { pending: Migration[] } {

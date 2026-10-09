@@ -13,6 +13,8 @@ export type CatalogueStoreErrorCode =
   | "SCHEMA_DRIFT"
   | "DATABASE_CORRUPT"
   | "DATABASE_UNREADABLE"
+  /** transient: another connection held the write lock past busy_timeout; retry */
+  | "DATABASE_BUSY"
   | "AUTHORING_UNAVAILABLE"
   // write validation
   | "VALIDATION_FAILED"
@@ -68,5 +70,10 @@ export class CatalogueStoreError extends Error {
   /** The configured store cannot serve at all (as opposed to one rejected write). */
   get unavailable(): boolean {
     return UNAVAILABLE.has(this.code);
+  }
+
+  /** Retrying later may succeed (lock contention), unlike an unavailable store or a rejected write. */
+  get transient(): boolean {
+    return this.code === "DATABASE_BUSY";
   }
 }

@@ -20,7 +20,7 @@ database (D-014, D-017, ADR-0001).
 |---|---|---|
 | unset / `static` | ignored | Validated bootstrap JSON, exactly as before DYAI-39. This is the default and the current Render preview. |
 | `sqlite` | `file:` URL of an existing, migrated file | The durable store serves Commands/Recipes/Categories. |
-| `sqlite` | missing, non-`file:`, in-memory, absent file, unopenable path, unmigrated, drifted or corrupt | Fail closed. `CatalogueStoreError` with code `CONFIG_INVALID`, `DATABASE_MISSING`, `DATABASE_UNREADABLE`, `SCHEMA_NOT_MIGRATED`, `SCHEMA_DRIFT` or `DATABASE_CORRUPT`. A SQLite failure at query time (after open) is `DATABASE_UNREADABLE` too. Pages error, and `/api/generate` answers `503 catalogue_unavailable`. **There is no fallback to the static JSON.** |
+| `sqlite` | missing, non-`file:`, in-memory, absent file, unopenable path, unmigrated, drifted or corrupt | Fail closed. `CatalogueStoreError` with code `CONFIG_INVALID`, `DATABASE_MISSING`, `DATABASE_UNREADABLE`, `SCHEMA_NOT_MIGRATED`, `SCHEMA_DRIFT` or `DATABASE_CORRUPT`. A SQLite failure at query time (after open) is `DATABASE_UNREADABLE` too, and lock contention past the busy timeout is `DATABASE_BUSY` (transient). The schema-object comparison runs at open, not on every query. Pages error, and `/api/generate` answers `503 catalogue_unavailable`. **There is no fallback to the static JSON.** |
 | anything else | – | `CONFIG_INVALID` |
 
 The runtime never creates or migrates a database. The sqlite module is loaded only when it is
@@ -31,9 +31,10 @@ configured (`src/server/catalogue/index.ts`), so the default runtime never touch
 1. **Before activation**, `src/domain/commands/catalogue.json` and `src/server/recipes/recipes.json` are the runtime source (static adapter).
 2. **Bootstrap**:
    * `npm run db:migrate -- --database <file>` creates the schema.
-   * `npm run db:import -- --database <file>` imports the VC-01 seed. The import validates the whole bundle against the contract, with the registry, and runs in one transaction. VC-01 commands enter `ACTIVE` (they are the published catalogue) with origin `vc01_import`.
+   * `npm run db:import -- --database <file>` imports the VC-01 seed. The import validates the whole bundle against the contract, with the registry, and runs in one transaction. VC-01 commands enter `ACTIVE` (they are the published catalogue) with origin `vc01_import`, and their recipe versions are marked as seed-imported.
+   * The first successful import is the bootstrap. Authored content that does not collide with the seed may already exist. A seed slash, command id or recipe id that is already authored (even with identical content) is a conflict, so a seed command is never bound to a recipe history it was not validated with.
 3. **After activation** (`COMMAND_STORE_ADAPTER=sqlite`), the database is the runtime truth for Commands, Recipes and Categories. Authoring writes go through `AuthoringRepository` only. The JSON files are not written back and are not read at runtime: they are the historical seed. The import bootstraps once; a re-run only confirms the seed:
-   * A seed command or recipe equal to what the seed originally imported counts as `unchanged`, even if an operator has since edited the persisted command (the comparison is with the `import` revision, not today's record).
+   * A seed command or recipe equal to what the seed originally imported counts as `unchanged`, even if an operator has since edited the persisted command or authored newer recipe versions. Commands are compared with their `import` revision, not today's record; recipe versions only with seed-imported versions. Such a re-run changes no catalogue content and only records an `import_runs` row.
    * A seed entry that differs from what was imported, or that is new after the bootstrap, is refused as a whole (`IMPORT_CONFLICT`, nothing written). Adding a command to the JSON therefore never publishes it: new content is authored through the repository and goes `DRAFT → TESTING → ACTIVE`.
    * No JSON-to-database dual-write contract exists.
 4. Model Capability stays in the committed registry (`src/server/models/registry.json`) behind `ModelRegistryPort`. The store reads it only to validate writes.
@@ -79,16 +80,31 @@ route `/[locale]` and `/api/generate` read through the repositories.
 
 ## Forbidden content
 
-Before any write, the repository rejects (`FORBIDDEN_CONTENT`):
+Before any write (and before the seed import), the repository runs `src/server/persistence/content-guard.ts`
+and refuses with `FORBIDDEN_CONTENT`. The guard measures these mechanisms, and nothing more:
 
-* credential fields and credential-like values: OpenRouter/OpenAI-style keys, Stripe-style keys, bearer/basic/digest auth values, `key: value` password/secret/token assignments, private keys, GitHub, AWS, Google and Slack tokens, JWTs, URLs with `user:password@`;
-* Model Capability fields (`providerModelId`, `allowlist`, `benchmarkStatus`, modalities, cost, privacy);
-* image or binary payloads: any `data:` URI with a media type, base64/base64url runs of 200+ characters, line-wrapped base64 blocks;
-* any single text longer than 4000 characters (the seed's longest is 160).
+1. **Structure:** credential-named keys (`apiKey`, `secret`, `token`, `password`, `authorization`, …) and
+   Model Capability keys (`providerModelId`, `allowlist`, `benchmarkStatus`, modalities, cost, privacy) at any depth.
+2. **Size:**
+   * any text longer than 4000 characters;
+   * any whitespace-free token longer than 64 characters (paths and `http(s)` URLs: 512);
+   * more than two tokens of 40+ characters in one text;
+   * a document above 32 KB (command), 64 KB (recipe) or 8 KB (category).
 
-The credential list is pattern-based and cannot be exhaustive; the closed contract schemas and the length
-cap bound what an unrecognised shape could carry. Positive controls (ordinary prose such as "basic
-understanding", German text with umlauts, long plain descriptions) are part of the tests.
+   VC-01 copy stays far below this: its longest token is 24 characters and its largest document 1.6 KB.
+   Encoded images and keys are long unbroken tokens, so they hit these limits. A payload deliberately cut
+   into short whitespace-separated pieces is not detected, but it stays under 4000 characters per text.
+3. **Shapes:** `data:` URIs (`data:` + optional media type + `;` or `,`), auth-header values
+   (`bearer`/`basic`/`digest` + a 16+ character value with a digit, symbol or mixed case), and the formats listed in
+   `CREDENTIAL_SHAPES`: OpenRouter, OpenAI/Anthropic-style `sk-` keys, PEM private keys, AWS access key ids,
+   Google API keys, Slack and GitHub tokens, JWTs, URLs with `user:password@`.
+
+Credential detection in free text cannot be exhaustive: an unknown key format shorter than 65 characters
+is not recognised. What bounds it is the closed contract schemas (no field exists for credentials) and the
+rules above. Every check is a split or a single-pass regex without overlapping quantifiers. A test
+asserts that adversarial 4000-character inputs finish in under 50 ms. Positive controls in the tests
+(prose such as "basic understanding", "metadata:", "Password: required…", German text, URLs, a 63-character
+token) must pass.
 
 Contract validation then applies the schemas and the provider-term scan. The schema contains no model,
 provider, secret or image table or column (`tests/persistence-schema.test.mjs`).

@@ -54,6 +54,8 @@ export interface SqliteStoreOptions {
   file: string;
   models: ModelRegistryPort;
   now?: () => string;
+  /** How long a statement waits for another connection's lock (default 5000 ms). */
+  busyTimeoutMs?: number;
 }
 
 interface CommandRow {
@@ -88,6 +90,15 @@ function compareSemver(a: string, b: string): number {
 }
 
 const parse = <T>(json: string): T => JSON.parse(json) as T;
+
+/** Ids and versions at the authoring boundary are non-empty strings; anything else is an input error. */
+function requireText(...values: unknown[]): void {
+  for (const value of values) {
+    if (typeof value !== "string" || value.length === 0) {
+      throw new CatalogueStoreError("VALIDATION_FAILED", `expected a non-empty string id, got ${value === null ? "null" : typeof value}`);
+    }
+  }
+}
 const issuesText = (issues: readonly ContractIssue[]) => issues.map((issue) => `${issue.code} ${issue.path}`).join("; ");
 
 function toCategory(row: CategoryRow): CategoryRecord {
@@ -107,6 +118,8 @@ function isConstraintError(error: unknown, pattern: RegExp): boolean {
 }
 
 const SQLITE_CONSTRAINT = 19;
+const SQLITE_BUSY = 5;
+const SQLITE_LOCKED = 6;
 
 /**
  * Every repository call surfaces a CatalogueStoreError. A database-level rule that refused a write
@@ -117,10 +130,13 @@ const SQLITE_CONSTRAINT = 19;
 function storeError(error: unknown): unknown {
   if (error instanceof CatalogueStoreError) return error;
   const sqlite = error as { code?: string; errcode?: number; message?: string };
+  // a value SQLite cannot bind (e.g. an id that is not a string): the caller's input, not the store
+  if (sqlite?.code === "ERR_INVALID_ARG_TYPE") return new CatalogueStoreError("VALIDATION_FAILED", sqlite.message ?? "invalid argument");
   if (sqlite?.code !== "ERR_SQLITE_ERROR") return error;
-  if (typeof sqlite.errcode === "number" && (sqlite.errcode & 0xff) === SQLITE_CONSTRAINT) {
-    return new CatalogueStoreError("CONSTRAINT_VIOLATION", sqlite.message ?? "constraint failed");
-  }
+  const primary = typeof sqlite.errcode === "number" ? sqlite.errcode & 0xff : -1;
+  if (primary === SQLITE_CONSTRAINT) return new CatalogueStoreError("CONSTRAINT_VIOLATION", sqlite.message ?? "constraint failed");
+  // another connection held the lock past busy_timeout: transient, retryable
+  if (primary === SQLITE_BUSY || primary === SQLITE_LOCKED) return new CatalogueStoreError("DATABASE_BUSY", sqlite.message ?? "database is locked");
   return new CatalogueStoreError("DATABASE_UNREADABLE", sqlite.message ?? "query failed");
 }
 
@@ -140,12 +156,12 @@ function guarded<T extends object>(repository: T): T {
 }
 
 export function openSqliteCatalogueStore(options: SqliteStoreOptions): SqliteCatalogueStore {
-  const db: Database = openDatabase(options.file, { create: false });
+  const db: Database = openDatabase(options.file, { create: false, busyTimeoutMs: options.busyTimeoutMs });
   try {
     assertMigrated(db);
   } catch (error) {
     db.close();
-    throw error;
+    throw storeError(error);
   }
   const now = options.now ?? (() => new Date().toISOString());
   const registry = async (): Promise<ModelRegistry> => options.models.load();
@@ -349,12 +365,13 @@ export function openSqliteCatalogueStore(options: SqliteStoreOptions): SqliteCat
     }
   }
 
-  function insertRecipeVersion(recipe: Recipe, at: string) {
-    db.prepare("INSERT INTO recipe_versions (recipe_id, version, truth_mode, document, created_at) VALUES (?, ?, ?, ?, ?)").run(
+  function insertRecipeVersion(recipe: Recipe, origin: "vc01_import" | "authored", at: string) {
+    db.prepare("INSERT INTO recipe_versions (recipe_id, version, truth_mode, document, origin, created_at) VALUES (?, ?, ?, ?, ?, ?)").run(
       recipe.recipeId,
       recipe.version,
       recipe.truthMode,
       canonicalJson(recipe),
+      origin,
       at,
     );
   }
@@ -397,7 +414,7 @@ export function openSqliteCatalogueStore(options: SqliteStoreOptions): SqliteCat
     if (newest !== undefined && compareSemver(recipe.version, newest) <= 0) {
       throw new CatalogueStoreError("RECIPE_VERSION_NOT_NEWER", `${recipe.recipeId}@${recipe.version} is not newer than ${newest}`);
     }
-    insertRecipeVersion(recipe, at);
+    insertRecipeVersion(recipe, "authored", at);
     if (current === null) {
       db.prepare("INSERT INTO recipes (recipe_id, current_version, updated_at) VALUES (?, ?, ?)").run(recipe.recipeId, recipe.version, at);
     } else if (makeCurrent) {
@@ -496,6 +513,7 @@ export function openSqliteCatalogueStore(options: SqliteStoreOptions): SqliteCat
     },
 
     async archiveCategory(id) {
+      requireText(id);
       const result = db.prepare("UPDATE categories SET archived = 1, updated_at = ? WHERE id = ?").run(now(), id);
       if (result.changes === 0) throw new CatalogueStoreError("CATEGORY_NOT_FOUND", `category ${id} does not exist`);
       return toCategory(db.prepare("SELECT * FROM categories WHERE id = ?").get(id) as unknown as CategoryRow);
@@ -513,6 +531,7 @@ export function openSqliteCatalogueStore(options: SqliteStoreOptions): SqliteCat
     },
 
     async setCurrentRecipeVersion(recipeId, version) {
+      requireText(recipeId, version);
       const models = await registry();
       return inTransaction(db, () => {
         const document = recipeDocument(recipeId, version);
@@ -525,11 +544,13 @@ export function openSqliteCatalogueStore(options: SqliteStoreOptions): SqliteCat
     },
 
     async getRecipeVersion(recipeId, version) {
+      requireText(recipeId, version);
       const document = recipeDocument(recipeId, version);
       return document === null ? null : parse<Recipe>(document);
     },
 
     async listRecipeVersions(recipeId) {
+      requireText(recipeId);
       return (db.prepare("SELECT version FROM recipe_versions WHERE recipe_id = ?").all(recipeId) as { version: string }[])
         .map((row) => row.version)
         .sort(compareSemver);
@@ -583,6 +604,7 @@ export function openSqliteCatalogueStore(options: SqliteStoreOptions): SqliteCat
     },
 
     async updateCommand(id, input) {
+      requireText(id);
       const models = await registry();
       const { command, categoryIds, expectedRevision } = input;
       checkCommandInput(command);
@@ -609,6 +631,7 @@ export function openSqliteCatalogueStore(options: SqliteStoreOptions): SqliteCat
     },
 
     async transitionCommand(id, to, transitionOptions) {
+      requireText(id);
       if (!AUTHORING_LIFECYCLES.includes(to)) throw new CatalogueStoreError("LIFECYCLE_INVALID", `unknown lifecycle ${String(to)}`);
       const models = await registry();
       return inTransaction(db, () => {
@@ -640,6 +663,7 @@ export function openSqliteCatalogueStore(options: SqliteStoreOptions): SqliteCat
     },
 
     async getCommand(id) {
+      requireText(id);
       return readConsistent(() => {
         const row = commandRow(id);
         return row ? toAuthored(row) : null;
@@ -673,6 +697,7 @@ export function openSqliteCatalogueStore(options: SqliteStoreOptions): SqliteCat
     },
 
     async getCommandHistory(id) {
+      requireText(id);
       const rows = db
         .prepare("SELECT revision, lifecycle, document, category_ids, recipe_version, reason, recorded_at FROM command_revisions WHERE command_id = ? ORDER BY revision")
         .all(id) as {
@@ -712,24 +737,35 @@ export function openSqliteCatalogueStore(options: SqliteStoreOptions): SqliteCat
       const at = now();
       const conflicts: string[] = [];
       const report = { commandsInserted: 0, commandsUnchanged: 0, recipesInserted: 0, recipesUnchanged: 0, sourceDigest };
-      // The seed bootstraps an empty catalogue once. Afterwards the database is the source of truth and
-      // the JSON is history: a re-run only confirms that the seed still equals what was imported, and
-      // anything new or different in it is refused, so the JSON never becomes a second way to publish.
+      // The first successful import bootstraps the catalogue from the seed (next to any authored content
+      // that does not collide with it). Afterwards the database is the source of truth and the JSON is
+      // history: a re-run only confirms that the seed still equals what was imported, and anything new
+      // or different in it is refused, so the JSON never becomes a second way to publish.
       const bootstrapped = (db.prepare("SELECT count(*) AS n FROM import_runs").get() as { n: number }).n > 0;
       const after = "the catalogue was bootstrapped from the seed; author new content through the repository";
 
       for (const recipe of seedRecipes) {
-        const existing = recipeDocument(recipe.recipeId, recipe.version);
-        if (existing === canonicalJson(recipe)) {
-          report.recipesUnchanged += 1;
-        } else if (existing !== null) {
+        // Every seed recipe id is owned by the seed: only versions the seed itself imported count as
+        // equal. An authored version, even with identical content, is a conflict, so a seed command is
+        // never bound to a recipe history it was not validated with.
+        const existing = db.prepare("SELECT document, origin FROM recipe_versions WHERE recipe_id = ? AND version = ?").get(recipe.recipeId, recipe.version) as
+          | { document: string; origin: string }
+          | undefined;
+        const authoredVersions = (
+          db.prepare("SELECT version FROM recipe_versions WHERE recipe_id = ? AND origin = 'authored' ORDER BY version").all(recipe.recipeId) as { version: string }[]
+        ).map((row) => row.version);
+        if (existing && existing.origin !== "vc01_import") {
+          conflicts.push(`recipe ${recipe.recipeId}@${recipe.version}: persisted as an authored version, not imported from the seed`);
+        } else if (existing && existing.document !== canonicalJson(recipe)) {
           conflicts.push(`recipe ${recipe.recipeId}@${recipe.version}: persisted content differs from the seed`);
+        } else if (existing) {
+          report.recipesUnchanged += 1;
         } else if (bootstrapped) {
           conflicts.push(`recipe ${recipe.recipeId}@${recipe.version}: not part of the imported seed; ${after}`);
-        } else if (currentVersion(recipe.recipeId) !== null) {
-          conflicts.push(`recipe ${recipe.recipeId}: already persisted at ${currentVersion(recipe.recipeId)}, seed has ${recipe.version}`);
+        } else if (authoredVersions.length > 0) {
+          conflicts.push(`recipe ${recipe.recipeId}: already authored (${authoredVersions.join(", ")}) before the seed import`);
         } else {
-          insertRecipeVersion(recipe, at);
+          insertRecipeVersion(recipe, "vc01_import", at);
           db.prepare("INSERT INTO recipes (recipe_id, current_version, updated_at) VALUES (?, ?, ?)").run(recipe.recipeId, recipe.version, at);
           report.recipesInserted += 1;
         }
