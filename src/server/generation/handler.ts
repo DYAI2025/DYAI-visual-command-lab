@@ -2,6 +2,7 @@ import type { AuthPort } from "../auth/port.ts";
 import type { RateLimitPort } from "../rate-limit/port.ts";
 import type { SpendGuard } from "../budget/port.ts";
 import { ContractInvalidError, ContractResolutionError } from "../../domain/contract/contract.ts";
+import { CatalogueStoreError } from "../persistence/errors.ts";
 import { EXECUTION_PROFILES, ProviderError, type ExecutionProfile, type ImageProvider, type ProviderErrorKind } from "../openrouter/client.ts";
 import { buildGenerationEvent, type GenerationEvent, type TelemetrySink } from "../telemetry/generation.ts";
 import { GenerationConfigError, type GenerationConfig } from "./config.ts";
@@ -123,6 +124,7 @@ export async function handleGenerate(request: Request, deps: GenerationDeps): Pr
       command = await resolveCommandRef(input.commandRef, deps.sources.commands);
     } catch (error) {
       if (error instanceof ContractResolutionError) return fail(404, "command_not_found");
+      if (error instanceof CatalogueStoreError) return fail(503, "catalogue_unavailable");
       throw error;
     }
     Object.assign(context, { commandId: command.id, lane: command.lane });
@@ -135,6 +137,8 @@ export async function handleGenerate(request: Request, deps: GenerationDeps): Pr
       if (error instanceof ContractResolutionError) return finish(422, { error: "command_not_executable", detail: error.code.toLowerCase() });
       // The command, recipe and registry the repositories returned do not form a valid contract.
       if (error instanceof ContractInvalidError) return fail(503, "execution_not_configured");
+      // The configured durable catalogue cannot serve (missing, unmigrated, unreadable): fail closed.
+      if (error instanceof CatalogueStoreError) return fail(503, "catalogue_unavailable");
       throw error;
     }
     const { recipe, model, adapter, plan } = execution;

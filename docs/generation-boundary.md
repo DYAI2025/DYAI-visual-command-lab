@@ -79,6 +79,7 @@ Each step fails closed, and nothing reaches OpenRouter unless every earlier step
 | 503 | `generation_disabled`, `command_disabled`, `model_disabled` | Kill switch or stop list |
 | 503 | `budget_exhausted` | The daily budget cannot cover another reservation |
 | 503 | `server_security_boundary_not_configured`, `provider_not_configured`, `execution_not_configured` | Missing configuration, or repository data that does not form a valid contract |
+| 503 | `catalogue_unavailable` | The configured durable catalogue store cannot serve (DYAI-39; no fallback to static data) |
 | 503 | `provider_busy`, `provider_unavailable` | Provider rate limit, credits or routing unavailable |
 | 502 | `provider_failed`, `provider_rejected_request`, `provider_invalid_response`, `provider_unreachable` | Provider failure, sanitized |
 | 504 | `provider_timeout` | Provider did not answer in `OPENROUTER_TIMEOUT_MS` |
@@ -94,8 +95,10 @@ Generation resolves Command → Recipe → Model only through the application bo
 - the models from the Model Capability registry port (`src/server/models`), which stays separate from
   authoring persistence (ADR-0001, `docs/architecture.md`).
 
-Bootstrap binds the repositories to the validated static adapter (`src/server/catalogue/static-adapter.ts`);
-DYAI-39 replaces that adapter without changing this path. Whatever the repositories return is the
+The repositories bind to the validated static adapter (`src/server/catalogue/static-adapter.ts`) by default, or to the
+DYAI-39 durable store when `COMMAND_STORE_ADAPTER=sqlite` (`docs/persistence.md`); this path is the same for both.
+The durable store serves only ACTIVE commands, so a DRAFT/TESTING/ARCHIVED command answers `404 command_not_found`.
+A configured store that cannot serve (missing, unmigrated, unreadable database) answers `503 catalogue_unavailable`. Whatever the repositories return is the
 runtime truth: no generation code reads `catalogue.json` or `recipes.json`, and none uses the in-memory
 contract in `src/server/contract/`. `tests/generation-boundary.test.mjs` enforces this on the import
 graph of the route and the generation scripts (with a canary that proves the check detects a

@@ -25,7 +25,7 @@ Model Capability registry stays outside authoring persistence.
 
 ## Runtime source transition
 
-VC-01 JSON catalogue and recipes are bootstrap/import inputs. When DYAI-39 persistence is enabled, persisted Commands/Recipes/Categories become runtime authoring/read truth. No manual dual-write contract is allowed.
+VC-01 JSON catalogue and recipes are bootstrap/import inputs. When DYAI-39 persistence is enabled (`COMMAND_STORE_ADAPTER=sqlite`, after `db:migrate` + `db:import`), persisted Commands/Recipes/Categories become runtime authoring/read truth. No manual dual-write contract is allowed: the seed bootstraps the database once; a re-run that matches the imported seed changes no catalogue content (it only records an import run), and any changed or new seed entry is refused, never merged or published. A configured but unusable database fails closed instead of falling back to the JSON. Details: `docs/persistence.md`.
 
 ## Product shell
 
