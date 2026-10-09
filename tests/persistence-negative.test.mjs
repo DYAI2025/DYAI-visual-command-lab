@@ -602,3 +602,21 @@ test("a configured secret is found as written, JSON-escaped and encodeURICompone
     await rejects(store.authoring.addRecipeVersion(newRecipe("sticker-v1", version, { constraints: [text] })), "FORBIDDEN_CONTENT");
   }
 });
+
+test("structurally broken input is refused as VALIDATION_FAILED on every write path", async (t) => {
+  const { file, store } = await fixture(t);
+  const draft = await store.authoring.createDraftCommand({ command: newCommand(), recipe: newRecipe() });
+  const cases = [
+    () => store.authoring.createDraftCommand({ command: null }),
+    () => store.authoring.createDraftCommand(undefined),
+    () => store.authoring.updateCommand("sticker", { command: null, categoryIds: [], expectedRevision: draft.revision }),
+    () => store.authoring.addRecipeVersion(null),
+    () => store.authoring.createCategory(null),
+    () => store.importSeed(null),
+  ];
+  for (const [index, write] of cases.entries()) {
+    await refusedWithoutTrace(file, Promise.resolve().then(write), "VALIDATION_FAILED").catch((error) => {
+      throw new Error(`case ${index}: ${error.message}`);
+    });
+  }
+});

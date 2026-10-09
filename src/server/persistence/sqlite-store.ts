@@ -131,6 +131,8 @@ function storeError(error: unknown): unknown {
   const sqlite = error as { code?: string; errcode?: number; message?: string };
   // a value SQLite cannot bind (e.g. an id that is not a string): the caller's input, not the store
   if (sqlite?.code === "ERR_INVALID_ARG_TYPE") return new CatalogueStoreError("VALIDATION_FAILED", sqlite.message ?? "invalid argument");
+  // a structurally broken input (e.g. command: null) fails while being read: the caller's input, refused
+  if (error instanceof TypeError) return new CatalogueStoreError("VALIDATION_FAILED", `malformed input (${error.message})`);
   if (sqlite?.code !== "ERR_SQLITE_ERROR") return error;
   const primary = typeof sqlite.errcode === "number" ? sqlite.errcode & 0xff : -1;
   if (primary === SQLITE_CONSTRAINT) return new CatalogueStoreError("CONSTRAINT_VIOLATION", sqlite.message ?? "constraint failed");

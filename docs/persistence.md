@@ -74,7 +74,7 @@ route `/[locale]` and `/api/generate` read through the repositories.
   * categories: create, archive, list;
   * recipe versions: add, set current, get, list;
   * commands: create a DRAFT (optionally with its recipe in the same transaction), update (optimistic `expectedRevision`), transition, archive, get, list (by lane, category or lifecycle), history.
-* **Failure reporting:** every refusal is a `CatalogueStoreError` with a code (`src/server/persistence/errors.ts`), and a write that fails rolls back completely. A database rule that refuses a write the repository did not catch first is `CONSTRAINT_VIOLATION`.
+* **Failure reporting:** every refusal is a `CatalogueStoreError` with a code (`src/server/persistence/errors.ts`), and a write that fails rolls back completely. A database rule that refuses a write the repository did not catch first is `CONSTRAINT_VIOLATION`. Structurally broken input (for example `command: null`) is `VALIDATION_FAILED`.
 * **Read consistency:** operator reads that combine several statements (`getCommand`, `listCommands`) run in one read transaction, so a record, its categories and its recipe version come from the same snapshot even while another process writes.
 * **Server-only:** no client component may reach `src/server/**` (`tests/ui-boundary.test.mjs`). With the static adapter, `authoringRepository()` fails closed (`AUTHORING_UNAVAILABLE`).
 
