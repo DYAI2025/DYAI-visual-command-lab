@@ -15,8 +15,9 @@ import { CatalogueStoreError } from "./errors.ts";
 //  2. this server's own secrets: any text containing the value of a configured secret environment
 //     variable (OPENROUTER_API_KEY and every *KEY / *SECRET / *TOKEN / *PASSWORD variable of 16+ chars);
 //  3. fixed formats: RFC 2397 data: URIs and prefix-anchored credential formats (CREDENTIAL_FORMATS);
-//  4. image bytes: every run of 16+ base64/base64url (24+ hex) characters is decoded at its start and
-//     refused when the bytes begin with an image file signature (IMAGE_SIGNATURES);
+//  4. image bytes: after undoing JSON (\/) and URL (%2F, %2B, …) escaping, every run of 16+ base64 /
+//     base64url (24+ hex) characters is decoded in every alignment and refused when an image file
+//     signature of 4+ bytes (IMAGE_SIGNATURES) occurs at any byte position;
 //  5. capacity: 4000 characters per text and a byte cap per document.
 // Every check is a single-pass regex without overlapping quantifiers or a fixed-size decode, so it is
 // linear in the input.
@@ -67,32 +68,46 @@ function ascii(bytes: Uint8Array, from: number, to: number): string {
   return String.fromCharCode(...bytes.subarray(from, to));
 }
 
-/** File signatures of common raster image formats. */
-export const IMAGE_SIGNATURES: readonly [string, (b: Uint8Array) => boolean][] = [
-  ["PNG", (b) => b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47],
-  ["JPEG", (b) => b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff],
-  ["GIF", (b) => ascii(b, 0, 4) === "GIF8"],
-  ["WebP", (b) => ascii(b, 0, 4) === "RIFF" && ascii(b, 8, 12) === "WEBP"],
-  ["BMP", (b) => ascii(b, 0, 2) === "BM" && b[6] === 0 && b[7] === 0 && b[8] === 0 && b[9] === 0],
-  ["TIFF", (b) => (ascii(b, 0, 2) === "II" && b[2] === 42 && b[3] === 0) || (ascii(b, 0, 2) === "MM" && b[2] === 0 && b[3] === 42)],
-  ["ICO", (b) => b[0] === 0 && b[1] === 0 && b[2] === 1 && b[3] === 0 && b[4] > 0],
-  ["HEIF/AVIF", (b) => ascii(b, 4, 8) === "ftyp" && /^(?:heic|heix|hevc|mif1|msf1|avif|avis)$/.test(ascii(b, 8, 12))],
+const JPEG_MARKERS = new Set([0xdb, 0xc0, 0xc2, 0xc4, 0xfe, ...Array.from({ length: 16 }, (_, i) => 0xe0 + i)]);
+const SIGNATURE_WINDOW = 12;
+// first bytes of the signatures below (PNG, JPEG, GIF, WebP, BMP, TIFF II/MM, ICO); HEIF/AVIF is
+// recognised by "f" of "ftyp" at offset 4
+const SIGNATURE_FIRST_BYTES = new Set([0x89, 0xff, 0x47, 0x52, 0x42, 0x49, 0x4d, 0x00]);
+
+/** File signatures (4+ bytes each) of common raster image formats, checked at byte i of b. */
+export const IMAGE_SIGNATURES: readonly [string, (b: Uint8Array, i: number) => boolean][] = [
+  ["PNG", (b, i) => b[i] === 0x89 && ascii(b, i + 1, i + 4) === "PNG" && b[i + 4] === 0x0d && b[i + 5] === 0x0a && b[i + 6] === 0x1a && b[i + 7] === 0x0a],
+  ["JPEG", (b, i) => b[i] === 0xff && b[i + 1] === 0xd8 && b[i + 2] === 0xff && JPEG_MARKERS.has(b[i + 3])],
+  ["GIF", (b, i) => /^GIF8[79]a$/.test(ascii(b, i, i + 6))],
+  ["WebP", (b, i) => ascii(b, i, i + 4) === "RIFF" && ascii(b, i + 8, i + 12) === "WEBP"],
+  ["BMP", (b, i) => ascii(b, i, i + 2) === "BM" && b[i + 6] === 0 && b[i + 7] === 0 && b[i + 8] === 0 && b[i + 9] === 0],
+  ["TIFF", (b, i) => (ascii(b, i, i + 2) === "II" && b[i + 2] === 42 && b[i + 3] === 0) || (ascii(b, i, i + 2) === "MM" && b[i + 2] === 0 && b[i + 3] === 42)],
+  ["ICO", (b, i) => b[i] === 0 && b[i + 1] === 0 && b[i + 2] === 1 && b[i + 3] === 0 && b[i + 4] > 0 && b[i + 5] === 0],
+  ["HEIF/AVIF", (b, i) => ascii(b, i + 4, i + 8) === "ftyp" && /^(?:heic|heix|hevc|mif1|msf1|avif|avis)$/.test(ascii(b, i + 8, i + 12))],
 ];
 const BASE64_RUN = /[A-Za-z0-9+/_-]{16,}/g;
 const HEX_RUN = /[0-9a-fA-F]{24,}/g;
 
-/** The image format whose signature the first decoded bytes of an encoded run carry, if any. */
+/** Undo the JSON and URL escapes that would split an encoded run (linear, fixed replacements). */
+function unescapeRuns(text: string): string {
+  return text.replace(/\\\//g, "/").replace(/%(2F|2B|3D|3A|3B|2C)/gi, (_, hex: string) => String.fromCharCode(parseInt(hex, 16)));
+}
+
+/** The image format whose signature occurs anywhere in the decoded bytes of an encoded run, if any. */
 function imageInRun(run: string, encoding: "base64" | "hex"): string | null {
-  // the run may be glued to preceding characters of the same alphabet (e.g. "x://iVBOR…" yields the
-  // run "//iVBOR…"), so try every alignment within the first encoding unit
-  const alignments = encoding === "base64" ? 4 : 2;
-  const width = encoding === "base64" ? 16 : 24;
-  for (let offset = 0; offset < alignments && offset + width <= run.length; offset++) {
-    let head = run.slice(offset, offset + width);
-    if (encoding === "base64") head = head.replace(/-/g, "+").replace(/_/g, "/");
-    const bytes = Buffer.from(head, encoding);
-    const hit = IMAGE_SIGNATURES.find(([, matches]) => matches(bytes));
-    if (hit) return hit[0];
+  // decoding starts at each alignment of the first unit, so a signature after any prefix is found
+  const unit = encoding === "base64" ? 4 : 2;
+  const normalized = encoding === "base64" ? run.replace(/-/g, "+").replace(/_/g, "/") : run;
+  for (let offset = 0; offset < unit; offset++) {
+    const usable = Math.floor((normalized.length - offset) / unit) * unit;
+    if (usable < unit * 3) continue;
+    const bytes = Buffer.from(normalized.slice(offset, offset + usable), encoding);
+    for (let i = 0; i + 4 <= bytes.length; i++) {
+      if (!SIGNATURE_FIRST_BYTES.has(bytes[i]) && bytes[i + 4] !== 0x66) continue;
+      const window = bytes.subarray(i, i + SIGNATURE_WINDOW);
+      const hit = IMAGE_SIGNATURES.find(([, matches]) => matches(window, 0));
+      if (hit) return hit[0];
+    }
   }
   return null;
 }
@@ -106,11 +121,12 @@ function configuredSecrets(env: Record<string, string | undefined>): string[] {
     .map(([, value]) => (value as string).trim());
 }
 
-function forbiddenText(text: string, secrets: readonly string[]): string | null {
-  if (text.length > MAX_TEXT_LENGTH) return `text longer than ${MAX_TEXT_LENGTH} characters`;
+function forbiddenText(raw: string, secrets: readonly string[]): string | null {
+  if (raw.length > MAX_TEXT_LENGTH) return `text longer than ${MAX_TEXT_LENGTH} characters`;
+  const text = unescapeRuns(raw);
   if (DATA_URI.test(text)) return "data: URI";
   for (const [name, format] of CREDENTIAL_FORMATS) if (format.test(text)) return `credential (${name})`;
-  if (secrets.some((secret) => text.includes(secret))) return "credential (a configured server secret)";
+  if (secrets.some((secret) => raw.includes(secret) || text.includes(secret))) return "credential (a configured server secret)";
   for (const [run] of text.matchAll(BASE64_RUN)) {
     const image = imageInRun(run, "base64");
     if (image) return `encoded ${image} image`;

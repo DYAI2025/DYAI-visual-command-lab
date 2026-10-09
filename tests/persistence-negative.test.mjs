@@ -360,3 +360,31 @@ test("positive controls: code-like snippets and long links in authoring copy pas
     await rejects(store.authoring.addRecipeVersion(newRecipe("sticker-v1", "0.2.0", { constraints: [`img ${uri}`] })), "FORBIDDEN_CONTENT");
   }
 });
+
+test("image bytes behind any prefix and through JSON or URL escaping are refused", async (t) => {
+  const { file, store } = await fixture(t);
+  const { PNG, JPEG } = imageSamples();
+  const cases = [];
+  for (const [format, bytes] of Object.entries({ PNG, JPEG })) {
+    const b64 = bytes.toString("base64");
+    for (const prefix of ["PNG-", "Logo-", "Bild-Daten-", "logo_", "base64-", "img/", "src/assets/", "1234", "https://cdn.example.com/img/"]) {
+      cases.push([`${format} after ${prefix}`, `${prefix}${b64}`]);
+    }
+    cases.push([`${format} JSON-escaped data URI`, `"data:image\\/jpeg;base64,${b64.replace(/\//g, "\\/")}"`]);
+    cases.push([`${format} URL-encoded data URI`, `url("data%3Aimage%2Fjpeg%3Bbase64%2C${encodeURIComponent(b64)}")`]);
+  }
+  for (const [name, value] of cases) {
+    await refusedWithoutTrace(file, store.authoring.addRecipeVersion(newRecipe("sticker-v1", "0.1.0", { constraints: [value] })), "FORBIDDEN_CONTENT").catch((error) => {
+      throw new Error(`${name}: ${error.message}`);
+    });
+  }
+});
+
+test("positive control: 2000 sha256 digests in hex and base64 pass the image check", async () => {
+  const { createHash } = await import("node:crypto");
+  const { assertNoForbiddenContent } = await import("../src/server/persistence/content-guard.ts");
+  for (let i = 0; i < 2000; i++) {
+    const digest = createHash("sha256").update(`fixture-${i}`).digest();
+    assertNoForbiddenContent({ refs: [digest.toString("hex"), digest.toString("base64"), digest.toString("base64url")] }, "recipe", {});
+  }
+});

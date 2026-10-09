@@ -95,30 +95,37 @@ a payload:
    (`OPENROUTER_API_KEY`, and every variable whose name ends in `KEY`, `SECRET`, `TOKEN` or `PASSWORD`, if its
    value has 16 or more characters).
 3. **Fixed formats:**
-   * RFC 2397 `data:` URIs, of the form `data:[type/subtype][;parameter]*,` with any parameter characters. A
-     `{data:true,…}` code snippet is not one.
+   * RFC 2397 `data:` URIs: `data:[type/subtype][;parameter]*,`, where parameters are any non-whitespace characters
+     up to the next `;` or `,`. The guard accepts at most 8 parameters of at most 200 characters each. A
+     `{data:true,…}` code snippet is not a `data:` URI.
    * The prefix-anchored credential formats in `CREDENTIAL_FORMATS`: `sk-or-v1-` (OpenRouter), `sk-proj-` /
      `sk-ant-`, Stripe `sk_/rk_live|test_`, PEM private keys, `AKIA…` (AWS), `AIza…` (Google), `xox?-` (Slack),
      `ghp_…` / `github_pat_…` (GitHub), JWTs, and URLs with `user:password@`.
-4. **Image bytes:** every run of 16 or more base64/base64url characters (24 or more for hex) is decoded at its start.
-   The guard tries all alignments of the first unit, so a run glued to `x://` is still found. A run whose bytes
-   begin with an image file signature is refused. The signatures are PNG, JPEG, GIF, WebP, BMP, TIFF, ICO and
-   HEIF/AVIF. A pasted image starts with its signature, wrapped or not, raw or inside a `data:` URI. Separators,
-   Markdown tables, links in any quotes, paths and hashes are not images, so they pass.
-5. **Capacity:** at most 4000 characters per text. Per document, at most 32 KB for a command, 64 KB for a recipe
-   and 8 KB for a category. VC-01 copy stays far below this: its largest document is 1.6 KB.
+4. **Image bytes:**
+   * The guard first undoes JSON (`\/`) and URL (`%2F`, `%2B`, `%3D`, `%3A`, `%3B`, `%2C`) escaping.
+   * It then decodes every run of 16 or more base64/base64url characters (24 or more for hex) in every alignment.
+   * It refuses the text if an image file signature of 4 or more bytes occurs at any byte position. The signatures
+     are PNG (8 bytes), JPEG (`FF D8 FF` plus a marker byte), GIF87a/89a, WebP, BMP, TIFF, ICO and HEIF/AVIF.
+   * An accidentally pasted image carries its signature, raw, wrapped, after a prefix, escaped, or inside a
+     `data:` URI.
+   * Separators, Markdown tables, links in any quotes, paths and ordinary prose are not encoded runs and pass.
+   * Hashes and IDs are encoded runs. A random one matches a signature only by chance. JPEG is the weakest signature, at about
+     4.7·10⁻⁹ per byte position. That gives roughly 1 in 2 million per digest over all alignments. The tests check 2000 sha256 digests in hex, base64 and base64url.
+5. **Capacity:** at most 4000 characters per text, and a per-document cap of 32 KB (command), 64 KB (recipe) or
+   8 KB (category). VC-01 copy stays far below this; its largest document is 1.6 KB.
 
 **Not detected (by design):**
 
 * A credential in an unknown format that is not one of this server's own secrets (for example a generic
   bearer token, or a password typed into prose).
 * A server secret that has been split, re-cased or spaced out.
-* Image bytes without their file header, other binary data, and anything deliberately disguised.
+* Image bytes without their file header, other binary data, space-grouped hex dumps (the default `xxd` output), other encodings (base32, …), and anything deliberately disguised.
 
 Within the capacity limits these cases are bounded by the closed contract schemas, which have no field for
 credentials or bytes.
 
-The checks are single-pass regexes without overlapping quantifiers and fixed-size decodes. A test
+The checks are single-pass regexes without overlapping quantifiers plus a linear decode-and-scan. Measured
+worst case: about 1.3 ms for one 4000-character encoded run, and 14 ms for a maximal 60 KB recipe. A test
 asserts that adversarial 4000-character inputs finish in under 50 ms. Positive controls in the tests
 must pass:
 
