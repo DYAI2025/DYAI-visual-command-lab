@@ -412,36 +412,6 @@ test("positive control: 2000 sha256 digests in hex and base64 pass the image che
   }
 });
 
-test("the image scan of a maximal recipe of low-entropy runs stays well under a request budget", async () => {
-  const { assertNoForbiddenContent } = await import("../src/server/persistence/content-guard.ts");
-  const { randomBytes } = await import("node:crypto");
-  const cost = (recipe) => {
-    let best = Infinity;
-    for (let run = 0; run < 3; run++) {
-      const started = performance.now();
-      try {
-        assertNoForbiddenContent(recipe, "recipe", {});
-      } catch {
-        // only the time matters
-      }
-      best = Math.min(best, performance.now() - started);
-    }
-    return best;
-  };
-  const referenceRecipe = { constraints: Array.from({ length: 15 }, () => randomBytes(3000).toString("base64").slice(0, 4000)) };
-  for (const filler of ["A", "/", "0"]) {
-    const candidate = { constraints: Array.from({ length: 15 }, () => filler.repeat(4000)) };
-    let reference = Infinity;
-    let ms = Infinity;
-    for (let round = 0; round < 5; round++) {
-      reference = Math.min(reference, cost(referenceRecipe));
-      ms = Math.min(ms, cost(candidate));
-    }
-    // 25x: measured 3x at normal load and up to 15x with 3x more busy processes than cores; an allocation
-    // per compared position (the regression this guards) costs far more
-    assert.ok(ms <= Math.max(25 * reference, 40), `${filler}: ${ms.toFixed(1)} ms vs reference ${reference.toFixed(1)} ms`);
-  }
-});
 
 test("positive control: URL-escaped text is not read as credentials; RFC 2045 media types are data: URIs", async (t) => {
   const { store } = await fixture(t);
@@ -466,8 +436,18 @@ test("positive controls: prose about data: URIs, templates and query strings wit
     "https://www.google.com/url?q=https%3A%2F%2Fforms.example.com%3Fsubject%3DFeedback%3A%2520Sticker%26reply%3Dteam@dyai.studio&sa=D",
     "Return a hosted URL, never data:image/png;base64,… in the response.",
     "Gib nie data:image/png;base64,… zurück, und auch nicht data:image/*,—nur eine URL.",
+    "Book: https://example.com/?redirect=https://shop.example.de&time=10:00&contact=info@example.de",
+    "Login: https://login.example.com/?next=https://app.example.com:8443&login_hint=ben@example.de",
+    "Never return data:image/png;base64,<base64> in the response.",
+    "Antwort niemals als data:image/png;base64,<Base64-Daten>, sondern als URL.",
   ];
   assert.equal((await store.authoring.addRecipeVersion(newRecipe("sticker-v1", "0.1.0", { constraints }))).created, true);
-  // while a credential URL as written is still refused (escaped forms are documented as not detected)
-  await rejects(store.authoring.addRecipeVersion(newRecipe("sticker-v1", "0.2.0", { constraints: ["postgres://admin:hunter2pass@db.example.com:5432/app"] })), "FORBIDDEN_CONTENT");
+  // while a real credential URL is refused, as written and JSON- or %2F/%3A-escaped
+  for (const [version, url] of [
+    ["0.2.0", "postgres://admin:hunter2pass@db.example.com:5432/app"],
+    ["0.3.0", '{"db":"postgres:\\/\\/admin:hunter2pass@db.example.com:5432\\/app"}'],
+    ["0.4.0", "https%3A%2F%2Fadmin%3Ahunter2pass@db.example.com"],
+  ]) {
+    await rejects(store.authoring.addRecipeVersion(newRecipe("sticker-v1", version, { constraints: [url] })), "FORBIDDEN_CONTENT");
+  }
 });

@@ -96,14 +96,14 @@ a payload:
    value has 16 or more characters).
 3. **Fixed formats:**
    * RFC 2397 `data:` URIs: `data:[type/subtype][;parameter]*,`. Type and subtype are RFC 2045 tokens (ASCII
-     `!#$%&'*+.^_`|~`, digits, letters, `-`). The comma must be followed directly by data (a base64 or
-     percent-encoded character, or `<` for inline markup), so prose such as "never return data:image/*, …" or
-     "data:image/png;base64,… in the response" passes. Parameters are any non-whitespace characters up to the next `;` or `,`. The guard accepts at most 8 parameters of at most 200 characters each. A
+     `!#$%&'*+.^_`|~`, digits, letters, `-`). The comma must be followed directly by data: a base64 or
+     percent-encoded character, or inline markup starting with `<svg`, `<?xml`, `<!doctype` or `<html`. So prose such
+     as "never return data:image/*, …", "data:image/png;base64,… in the response" or a `<base64>` placeholder passes. Parameters are any non-whitespace characters up to the next `;` or `,`. The guard accepts at most 8 parameters of at most 200 characters each. A
      `{data:true,…}` code snippet is not a `data:` URI.
    * The prefix-anchored credential formats in `CREDENTIAL_FORMATS`: `sk-or-v1-` (OpenRouter), `sk-proj-` /
      `sk-ant-`, Stripe `sk_/rk_live|test_`, PEM private keys, `AKIA…` (AWS), `AIza…` (Google), `xox?-` (Slack),
      `ghp_…` / `github_pat_…` (GitHub), JWTs, and URLs with `user:password@`.
-   * These formats are matched against the text as written, without undoing escaping, because unescaping turned redirect and safelink URLs into false matches. The userinfo of a URL cannot contain `?` or `#`, so a query string with a colon and a later e-mail address is not a credential.
+   * These formats are matched against the text as written and with the JSON/URL escaping of item 4 undone. User and password in the userinfo cannot contain `?`, `#`, `&` or `=`. So a query string with a colon and a later e-mail address is not a credential, and neither is a nested URL inside a query (`?next=https://host:8443&mail=a@b`). A password that itself contains one of these characters is not detected.
 4. **Image bytes:**
    * The guard first undoes JSON (`\/`) and URL (`%2F`, `%2B`, `%3D`, `%3A`,
      `%3B`, `%2C`) escaping.
@@ -127,8 +127,9 @@ a payload:
 * A server secret that has been split, re-cased or spaced out.
 * Image bytes without their file header, other binary data, and other encodings such as base32.
 * Hex dumps with separators: the default `xxd` output, `xxd -i` C arrays, `\x89\x50` byte literals.
-* Credential formats in escaped form, such as a JSON-escaped `postgres:\/\/user:pw@…` or an `encodeURIComponent`-encoded
-  credential URL. A configured server secret is still found in escaped form.
+* A credential URL whose `@` is percent-encoded (`%40`, as in full `encodeURIComponent` output). JSON-escaped
+  (`\/`) and `%2F`/`%3A`-escaped credential URLs are found. A configured server secret is found in any of
+  these forms.
 * Escaping other than the listed JSON `\/` and `%XX` forms, such as HTML entities (`&#x2F;`) or double URL encoding
   (`%252F`).
 * Anything deliberately disguised.
@@ -139,17 +140,15 @@ credentials or bytes.
 The checks are single-pass regexes without overlapping quantifiers plus a linear decode-and-scan that uses only
 byte compares.
 
-* Measured on a development Mac (Node 24.16): under 10 ms per adversarial 4000-character text, and about
-  20–30 ms for a maximal 64 KB recipe of low-entropy runs. Absolute figures depend on the machine.
-* The tests assert relative bounds, with reference and candidate measured interleaved and the minimum taken over
-  several runs:
-  * an adversarial text may cost at most 8× a random encoded text of the same length, with a 10 ms floor;
-  * a maximal low-entropy recipe may cost at most 25× a random one, with a 40 ms floor. This is about 3× at
-    normal load, and up to 15× was measured with three times more busy processes than cores.
-
-  A backtracking regex or an allocation per compared position breaks these bounds. Measured with 24 busy processes on
-  8 cores, the text bound held in 13 of 13 runs. The recipe bound was then raised to 25×. Heavier
-  oversubscription can still disturb a wall-clock measurement.
+* **Gated:** catastrophic backtracking, the failure that would block the server for seconds. A test requires each
+  adversarial 4000-character text to cost at most 8× a random encoded text of the same length, with a 10 ms floor.
+  Reference and candidate are measured interleaved, taking the minimum over several runs. A backtracking regex
+  costs orders of magnitude more and fails the test.
+* **Not gated:** constant-factor efficiency. For example, an allocation per compared byte position slows the scan
+  several times but stays linear. Wall-clock ratios cannot separate that reliably from machine load, so no test
+  claims to catch it.
+* **Informational:** measured on a development Mac (Node 24.16), under 10 ms per adversarial 4000-character text,
+  and about 20–30 ms for a maximal 64 KB recipe of low-entropy runs.
 
 Positive controls in the tests must pass:
 
