@@ -223,6 +223,23 @@ test("the update guard scans every field of the command, not only the display te
 
 test("the content guard stays linear on adversarial input (no catastrophic backtracking)", async () => {
   const { assertNoForbiddenContent, MAX_TEXT_LENGTH } = await import("../src/server/persistence/content-guard.ts");
+  const { randomBytes } = await import("node:crypto");
+  // Relative, not absolute: each adversarial text may cost at most 8x a random encoded text of the same
+  // length, measured as the minimum of 5 runs in the same process, so machine load affects both sides.
+  const cost = (text) => {
+    let best = Infinity;
+    for (let run = 0; run < 5; run++) {
+      const started = performance.now();
+      try {
+        assertNoForbiddenContent({ text }, "command", {});
+      } catch {
+        // refused or accepted: only the time matters here
+      }
+      best = Math.min(best, performance.now() - started);
+    }
+    return best;
+  };
+  const reference = cost(randomBytes(3000).toString("base64").slice(0, MAX_TEXT_LENGTH));
   const adversarial = [
     "A".repeat(63) + "\n".repeat(MAX_TEXT_LENGTH - 64) + "x",
     ("A".repeat(39) + " \n ").repeat(90),
@@ -230,7 +247,7 @@ test("the content guard stays linear on adversarial input (no catastrophic backt
     ("bearer " + "a".repeat(15) + " ").repeat(170),
     ("http://" + "a".repeat(40) + ":").repeat(80),
     ("eyJ" + "a".repeat(60) + " ").repeat(60),
-    (" ").repeat(MAX_TEXT_LENGTH),
+    " ".repeat(MAX_TEXT_LENGTH),
     // low-entropy runs decode to bytes that pass the first-byte prefilter at every position
     "A".repeat(MAX_TEXT_LENGTH),
     "/".repeat(MAX_TEXT_LENGTH),
@@ -239,14 +256,8 @@ test("the content guard stays linear on adversarial input (no catastrophic backt
   ];
   for (const text of adversarial) {
     assert.ok(text.length <= MAX_TEXT_LENGTH, `${text.length}`);
-    const started = performance.now();
-    try {
-      assertNoForbiddenContent({ text }, "command");
-    } catch {
-      // refused or accepted: only the time matters here
-    }
-    const ms = performance.now() - started;
-    assert.ok(ms < 50, `${JSON.stringify(text.slice(0, 30))}… took ${ms.toFixed(1)} ms`);
+    const ms = cost(text);
+    assert.ok(ms <= Math.max(8 * reference, 10), `${JSON.stringify(text.slice(0, 30))}… took ${ms.toFixed(2)} ms vs reference ${reference.toFixed(2)} ms`);
   }
 });
 
@@ -396,12 +407,24 @@ test("positive control: 2000 sha256 digests in hex and base64 pass the image che
 
 test("the image scan of a maximal recipe of low-entropy runs stays well under a request budget", async () => {
   const { assertNoForbiddenContent } = await import("../src/server/persistence/content-guard.ts");
+  const { randomBytes } = await import("node:crypto");
+  const cost = (recipe) => {
+    let best = Infinity;
+    for (let run = 0; run < 3; run++) {
+      const started = performance.now();
+      try {
+        assertNoForbiddenContent(recipe, "recipe", {});
+      } catch {
+        // only the time matters
+      }
+      best = Math.min(best, performance.now() - started);
+    }
+    return best;
+  };
+  const reference = cost({ constraints: Array.from({ length: 15 }, () => randomBytes(3000).toString("base64").slice(0, 4000)) });
   for (const filler of ["A", "/", "0"]) {
-    const recipe = { constraints: Array.from({ length: 15 }, () => filler.repeat(4000)) };
-    const started = performance.now();
-    assertNoForbiddenContent(recipe, "recipe", {});
-    const ms = performance.now() - started;
-    assert.ok(ms < 100, `${filler}: ${ms.toFixed(1)} ms`);
+    const ms = cost({ constraints: Array.from({ length: 15 }, () => filler.repeat(4000)) });
+    assert.ok(ms <= Math.max(8 * reference, 40), `${filler}: ${ms.toFixed(1)} ms vs reference ${reference.toFixed(1)} ms`);
   }
 });
 
@@ -413,5 +436,25 @@ test("positive control: URL-escaped text is not read as credentials; RFC 2045 me
   assert.equal(ok.created, true);
   for (const uri of ["data:image/*;x=1,AAAA", "data:text/x~y,hi"]) {
     await rejects(store.authoring.addRecipeVersion(newRecipe("sticker-v1", "0.2.0", { constraints: [`see ${uri}`] })), "FORBIDDEN_CONTENT");
+  }
+});
+
+test("positive controls: prose about data: URIs, templates and query strings with colons pass", async (t) => {
+  const { store } = await fixture(t);
+  const constraints = [
+    "Never return data:image/*, return a hosted URL instead.",
+    "Gib niemals data:image/*, sondern eine gehostete URL zurück.",
+    'Build `data:image/${ext};base64,${b64}` only on the client.',
+    "Felder data:Größe/Bild, Farbe.",
+    "Feedback: [form](https://forms.example.com?subject=Feedback:%20Sticker&reply=team@dyai.studio)",
+  ];
+  assert.equal((await store.authoring.addRecipeVersion(newRecipe("sticker-v1", "0.1.0", { constraints }))).created, true);
+  // while a real credential URL is still refused, also JSON- or URL-escaped
+  for (const [version, url] of [
+    ["0.2.0", "postgres://admin:hunter2pass@db.example.com:5432/app"],
+    ["0.3.0", '{"db":"postgres:\\/\\/admin:hunter2pass@db.example.com:5432\\/app"}'],
+    ["0.4.0", "https%3A%2F%2Fadmin:hunter2pass@db.example.com"],
+  ]) {
+    await rejects(store.authoring.addRecipeVersion(newRecipe("sticker-v1", version, { constraints: [url] })), "FORBIDDEN_CONTENT");
   }
 });

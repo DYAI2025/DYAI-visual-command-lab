@@ -95,27 +95,28 @@ a payload:
    (`OPENROUTER_API_KEY`, and every variable whose name ends in `KEY`, `SECRET`, `TOKEN` or `PASSWORD`, if its
    value has 16 or more characters).
 3. **Fixed formats:**
-   * RFC 2397 `data:` URIs: `data:[type/subtype][;parameter]*,`. Type and subtype are RFC 2045 tokens: printable
-     characters except `()<>@,;:\"/[]?=`. Parameters are any non-whitespace characters up to the next `;` or `,`. The guard accepts at most 8 parameters of at most 200 characters each. A
+   * RFC 2397 `data:` URIs: `data:[type/subtype][;parameter]*,`. Type and subtype are RFC 2045 tokens (ASCII
+     `!#$%&'*+.^_`|~`, digits, letters, `-`). At least one non-space character must follow the comma, so prose
+     such as "never return data:image/*, …" passes. Parameters are any non-whitespace characters up to the next `;` or `,`. The guard accepts at most 8 parameters of at most 200 characters each. A
      `{data:true,…}` code snippet is not a `data:` URI.
    * The prefix-anchored credential formats in `CREDENTIAL_FORMATS`: `sk-or-v1-` (OpenRouter), `sk-proj-` /
      `sk-ant-`, Stripe `sk_/rk_live|test_`, PEM private keys, `AKIA…` (AWS), `AIza…` (Google), `xox?-` (Slack),
      `ghp_…` / `github_pat_…` (GitHub), JWTs, and URLs with `user:password@`.
-   * These formats are matched against the text as written (unescaped). The `data:` URI check also runs on the
-     unescaped form.
+   * Like every check here, these formats are matched against the text as written and with JSON/URL escaping undone.
+     The userinfo of a URL cannot contain `?` or `#`, so a query string with a colon and a later e-mail address is
+     not a credential.
 4. **Image bytes:**
-   * For this check and the `data:` URI check, the guard first undoes JSON (`\/`) and URL (`%2F`, `%2B`, `%3D`, `%3A`,
+   * The guard first undoes JSON (`\/`) and URL (`%2F`, `%2B`, `%3D`, `%3A`,
      `%3B`, `%2C`) escaping.
    * It then decodes every run of 16 or more base64/base64url characters (24 or more for hex) in every alignment.
    * It refuses the text if an image file signature of 4 or more bytes occurs at any byte position. The signatures
      are PNG (8 bytes), JPEG (`FF D8 FF` plus a marker byte), GIF87a/89a, WebP, BMP, TIFF, ICO and HEIF/AVIF.
    * An accidentally pasted image carries its signature, raw, wrapped, after a prefix, escaped, or inside a
      `data:` URI.
-   * Words, paths, slugs and links do form such runs, and the guard decodes them. They pass because no signature
-     occurs in their decoded bytes. Separators and Markdown tables contain no run at all.
-     The tests' positive controls cover these cases.
+   * Words, paths, slugs, links and `-`/`_` separator runs form such runs too, and the guard decodes them. They pass
+     because no signature occurs in their decoded bytes. The tests' positive controls cover these cases.
    * Hashes and IDs are encoded runs. A random one matches a signature only by chance. JPEG is the weakest signature, at about
-     4.7·10⁻⁹ per byte position. That gives roughly 1 in 2 million per digest over all alignments. The tests check 2000 sha256 digests in hex, base64 and base64url.
+     4.9·10⁻⁹ per byte position (21 marker bytes / 2³²). That gives roughly 1 in 2 million per digest over all alignments. The tests check 2000 sha256 digests in hex, base64 and base64url.
 5. **Capacity:** at most 4000 characters per text, and a per-document cap of 32 KB (command), 64 KB (recipe) or
    8 KB (category). VC-01 copy stays far below this; its largest document is 1.6 KB.
 
@@ -136,11 +137,11 @@ credentials or bytes.
 The checks are single-pass regexes without overlapping quantifiers plus a linear decode-and-scan that uses only
 byte compares.
 
-* Measured worst case: about 4.5 ms for one 4000-character text, including low-entropy runs such as
-  `"A"×4000`, and about 19 ms for a maximal 60 KB recipe. Measured with Node 24.16 on a development Mac.
-* Tests assert under 50 ms per adversarial 4000-character text and under 100 ms per maximal recipe of
-  low-entropy runs. Positive controls in the tests
-must pass:
+* Measured on a development Mac (Node 24.16): under 10 ms per adversarial 4000-character text, and about
+  20–30 ms for a maximal 64 KB recipe of low-entropy runs. Absolute figures depend on the machine.
+* The tests assert relative bounds, which do not flake under load. An adversarial text may cost at most 8× a
+  random encoded text of the same length, and a maximal low-entropy recipe at most 8× a random one, in both cases
+  the minimum of several runs. A backtracking regex or an allocation per compared position breaks these bounds.
 
 * prose ("basic troubleshooting", "Bearer bonds", "metadata:", "Password: required…", German text);
 * Markdown tables, ASCII and Unicode separator lines;

@@ -19,8 +19,8 @@ import { CatalogueStoreError } from "./errors.ts";
 //     base64url (24+ hex) characters is decoded in every alignment and refused when an image file
 //     signature of 4+ bytes (IMAGE_SIGNATURES) occurs at any byte position;
 //  5. capacity: 4000 characters per text and a byte cap per document.
-// Every check is a single-pass regex without overlapping quantifiers or a fixed-size decode, so it is
-// linear in the input.
+// Every check is a single-pass regex without overlapping quantifiers or a linear decode-and-scan of an
+// encoded run (byte compares only), so the cost is linear in the input.
 
 export const MAX_TEXT_LENGTH = 4000;
 const MIN_SECRET_LENGTH = 16;
@@ -56,14 +56,15 @@ export const CREDENTIAL_FORMATS: readonly [string, RegExp][] = [
   ["Slack token", /\bxox[abposr]-[0-9]{6}/],
   ["GitHub token", /\b(?:gh[pousr]_[A-Za-z0-9]{30}|github_pat_[A-Za-z0-9_]{20})/],
   ["JWT", /\beyJ[A-Za-z0-9_-]{8,64}\.eyJ[A-Za-z0-9_-]{8}/],
-  ["URL with user:password", /\b[a-z][a-z0-9+.-]{0,20}:\/\/[^\s/:@]{1,64}:[^\s/@]{1,128}@/i],
+  ["URL with user:password", /\b[a-z][a-z0-9+.-]{0,20}:\/\/[^\s/:@?#]{1,64}:[^\s/@?#]{1,128}@/i],
 ];
 
 // RFC 2397: data:[<mediatype>][;<parameter>]*,<data>. A media type is token "/" token; a parameter
 // runs to the next ";" or ",". "{data:true,...}" in a code snippet has neither.
-// RFC 2045 token: printable characters except the tspecials ()<>@,;:\"/[]?= and whitespace
-const MEDIA_TOKEN = '[^\\s()<>@,;:\\\\"/\\[\\]?=]{1,80}';
-const DATA_URI = new RegExp(`\\bdata:(?:${MEDIA_TOKEN}/${MEDIA_TOKEN})?(?:;[^;,\\s]{1,200}){0,8},`, "i");
+// RFC 2045 token (ASCII, as RFC 7230 tchar): no tspecials, no braces, no non-ASCII letters
+const MEDIA_TOKEN = "[!#$%&'*+.^_`|~0-9a-z-]{1,80}";
+// a pasted data: URI carries data after the comma; "data:image/*, return a URL" in prose does not
+const DATA_URI = new RegExp(`\\bdata:(?:${MEDIA_TOKEN}/${MEDIA_TOKEN})?(?:;[^;,\\s]{1,200}){0,8},(?=\\S)`, "i");
 
 const JPEG_MARKERS = new Set([0xdb, 0xc0, 0xc2, 0xc4, 0xfe, ...Array.from({ length: 16 }, (_, i) => 0xe0 + i)]);
 // first bytes of the signatures below (PNG, JPEG, GIF, WebP, BMP, TIFF II/MM, ICO); HEIF/AVIF is
@@ -126,10 +127,10 @@ function configuredSecrets(env: Record<string, string | undefined>): string[] {
 
 function forbiddenText(raw: string, secrets: readonly string[]): string | null {
   if (raw.length > MAX_TEXT_LENGTH) return `text longer than ${MAX_TEXT_LENGTH} characters`;
-  // escaping is undone only for the data: URI and image checks; credential formats see the raw text
+  // every check sees the text as written and with JSON/URL escaping undone
   const text = unescapeRuns(raw);
   if (DATA_URI.test(raw) || DATA_URI.test(text)) return "data: URI";
-  for (const [name, format] of CREDENTIAL_FORMATS) if (format.test(raw)) return `credential (${name})`;
+  for (const [name, format] of CREDENTIAL_FORMATS) if (format.test(raw) || format.test(text)) return `credential (${name})`;
   if (secrets.some((secret) => raw.includes(secret) || text.includes(secret))) return "credential (a configured server secret)";
   for (const [run] of text.matchAll(BASE64_RUN)) {
     const image = imageInRun(run, "base64");
