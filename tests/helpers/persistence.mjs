@@ -32,8 +32,8 @@ let tick = 0;
 /** Monotonic, deterministic timestamps. */
 export const clock = () => new Date(Date.UTC(2026, 9, 9, 12, 0, tick++)).toISOString();
 
-export function openStore(file, { models = registryPort(), now = clock } = {}) {
-  return openSqliteCatalogueStore({ file, models, now });
+export function openStore(file, { models = registryPort(), now = clock, busyTimeoutMs } = {}) {
+  return openSqliteCatalogueStore({ file, models, now, busyTimeoutMs });
 }
 
 /** Migrated database with the VC-01 seed imported; returns an open store. */

@@ -280,3 +280,57 @@ test("a write refused by a database rule is CONSTRAINT_VIOLATION; lock contentio
   }
   assert.equal((await busyStore.authoring.createCategory(category("later"))).id, "later", "succeeds once the lock is gone");
 });
+
+test("listCommands is one snapshot across rows even when another process commits mid-list", async (t) => {
+  const f = await fixture(t);
+  await f.store.authoring.createCategory(category("cat-a"));
+  await f.store.authoring.createCategory(category("cat-b"));
+  await f.store.authoring.createDraftCommand({ command: newCommand("aaa", "sticker-v1"), recipe: newRecipe(), categoryIds: ["cat-a"] });
+  await f.store.authoring.createDraftCommand({ command: newCommand("zzz", "sticker-v1"), categoryIds: ["cat-a"] });
+  const { DatabaseSync } = await import("node:sqlite");
+  const other = new DatabaseSync(f.file);
+  t.after(() => other.close());
+  // the write lands after the reader has read the first row's categories, before the second row's
+  const original = DatabaseSync.prototype.prepare;
+  let categoryReads = 0;
+  DatabaseSync.prototype.prepare = function (sql) {
+    if (this !== other && sql.startsWith("SELECT category_id FROM command_categories") && ++categoryReads === 2) {
+      other.exec("BEGIN IMMEDIATE");
+      for (const id of ["aaa", "zzz"]) {
+        other.prepare("UPDATE commands SET revision = revision + 1, updated_at = 'x' WHERE id = ?").run(id);
+        other.prepare("DELETE FROM command_categories WHERE command_id = ?").run(id);
+        other.prepare("INSERT INTO command_categories VALUES (?, 'cat-b')").run(id);
+      }
+      other.exec("COMMIT");
+    }
+    return original.call(this, sql);
+  };
+  let rows;
+  try {
+    rows = await f.store.authoring.listCommands({ lifecycles: ["DRAFT"] });
+  } finally {
+    DatabaseSync.prototype.prepare = original;
+  }
+  assert.ok(categoryReads >= 2, "the interleaved write happened");
+  assert.deepEqual(rows.map((r) => [r.command.id, r.revision, r.categoryIds]), [["aaa", 1, ["cat-a"]], ["zzz", 1, ["cat-a"]]]);
+  const after = await f.store.authoring.listCommands({ lifecycles: ["DRAFT"] });
+  assert.deepEqual(after.map((r) => [r.command.id, r.revision, r.categoryIds]), [["aaa", 2, ["cat-b"]], ["zzz", 2, ["cat-b"]]]);
+});
+
+test("opening while another connection holds an exclusive lock is DATABASE_BUSY, not unreadable", async (t) => {
+  const f = await fixture(t);
+  f.store.close();
+  const { DatabaseSync } = await import("node:sqlite");
+  const other = new DatabaseSync(f.file);
+  t.after(() => other.isOpen && other.close());
+  other.exec("PRAGMA locking_mode = EXCLUSIVE; BEGIN EXCLUSIVE; UPDATE categories SET updated_at = updated_at;");
+  try {
+    const error = await rejects(Promise.resolve().then(() => openStore(f.file, { busyTimeoutMs: 20 })), "DATABASE_BUSY");
+    assert.equal(error.transient, true);
+  } finally {
+    // in WAL mode an EXCLUSIVE locking_mode connection keeps its lock until it closes
+    other.exec("ROLLBACK");
+    other.close();
+  }
+  assert.ok(Array.isArray(await f.reopen().authoring.listCategories()), "opens normally once the lock is gone");
+});

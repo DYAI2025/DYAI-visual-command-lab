@@ -119,7 +119,6 @@ function isConstraintError(error: unknown, pattern: RegExp): boolean {
 
 const SQLITE_CONSTRAINT = 19;
 const SQLITE_BUSY = 5;
-const SQLITE_LOCKED = 6;
 
 /**
  * Every repository call surfaces a CatalogueStoreError. A database-level rule that refused a write
@@ -136,7 +135,7 @@ function storeError(error: unknown): unknown {
   const primary = typeof sqlite.errcode === "number" ? sqlite.errcode & 0xff : -1;
   if (primary === SQLITE_CONSTRAINT) return new CatalogueStoreError("CONSTRAINT_VIOLATION", sqlite.message ?? "constraint failed");
   // another connection held the lock past busy_timeout: transient, retryable
-  if (primary === SQLITE_BUSY || primary === SQLITE_LOCKED) return new CatalogueStoreError("DATABASE_BUSY", sqlite.message ?? "database is locked");
+  if (primary === SQLITE_BUSY) return new CatalogueStoreError("DATABASE_BUSY", sqlite.message ?? "database is locked");
   return new CatalogueStoreError("DATABASE_UNREADABLE", sqlite.message ?? "query failed");
 }
 
@@ -725,8 +724,13 @@ export function openSqliteCatalogueStore(options: SqliteStoreOptions): SqliteCat
 
   async function importSeed(bundle: SeedBundle, importOptions: { source?: string } = {}): Promise<SeedImportReport> {
     const models = await registry();
-    assertNoForbiddenContent(bundle.catalogue, "seed catalogue");
-    assertNoForbiddenContent(bundle.recipes, "seed recipes");
+    // the same per-document rules and caps as authored writes (a malformed bundle is reported below)
+    const seedList = (document: unknown, key: string) => {
+      const list = (document as Record<string, unknown> | null)?.[key];
+      return Array.isArray(list) ? list : [];
+    };
+    for (const command of seedList(bundle.catalogue, "commands")) assertNoForbiddenContent(command, "command");
+    for (const recipe of seedList(bundle.recipes, "recipes")) assertNoForbiddenContent(recipe, "recipe");
     const issues = validateContract({ catalogue: bundle.catalogue, recipes: bundle.recipes, models });
     if (issues.length > 0) throw new CatalogueStoreError("IMPORT_SOURCE_INVALID", issuesText(issues), { issues });
     const seedCommands = (bundle.catalogue as { commands: CommandRecord[] }).commands;

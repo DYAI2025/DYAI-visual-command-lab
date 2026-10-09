@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { category, committedRegistry, newCommand, newRecipe, openStore, registryPort, rejects, seededStore, tableCounts } from "./helpers/persistence.mjs";
+import { category, committedRegistry, migratedDatabase, newCommand, newRecipe, openStore, registryPort, rejects, seedBundle, seededStore, tableCounts } from "./helpers/persistence.mjs";
 
 // DYAI-39 required negative tests. Each rejected write must name its reason (CatalogueStoreError
 // code) and leave every authoring table exactly as it was.
@@ -114,9 +114,9 @@ test("Model Capability documents, provider credentials and image bytes cannot en
     ["capabilities nested in a recipe adapter", () => store.authoring.addRecipeVersion(newRecipe("sticker-v1", "0.1.0", { modelAdapters: [{ modelRef: model.id, status: "untested", promptOverrides: [], providerModelId: model.providerModelId }] }))],
     ["an apiKey field on a command", () => store.authoring.createDraftCommand({ command: { ...newCommand(), apiKey: "x" }, recipe: newRecipe() })],
     ["an OpenRouter key in command text", () => store.authoring.createDraftCommand({ command: newCommand("sticker", "sticker-v1", { tags: ["play", `sk-or-v1-${"a".repeat(40)}`] }), recipe: newRecipe() })],
-    ["a bearer token in a recipe constraint", () => store.authoring.addRecipeVersion(newRecipe("sticker-v1", "0.1.0", { constraints: ["Bearer abcdefghijklmnopqrstuvwxyz012345"] }))],
+    ["an OpenAI project key in a recipe constraint", () => store.authoring.addRecipeVersion(newRecipe("sticker-v1", "0.1.0", { constraints: [`Use sk-proj-${"Q".repeat(24)} for calls.`] }))],
     ["an image data URI as a thumbnail", () => store.authoring.createDraftCommand({ command: newCommand("sticker", "sticker-v1", { thumbnails: [{ fixtureFamily: "person", src: "data:image/png;base64,iVBORw0KGgo", alt: { en: "a", de: "a" } }] }), recipe: newRecipe() })],
-    ["raw base64 image bytes in a recipe", () => store.authoring.addRecipeVersion(newRecipe("sticker-v1", "0.1.0", { fixtureRefs: ["A".repeat(400)] }))],
+    ["raw base64 image bytes in a recipe", () => store.authoring.addRecipeVersion(newRecipe("sticker-v1", "0.1.0", { fixtureRefs: [Buffer.from(Array.from({ length: 300 }, (_, i) => (i * 131 + 7) % 256)).toString("base64")] }))],
     ["a secret on a category", () => store.authoring.createCategory({ ...category("vault"), secret: "s3cr3t" })],
   ];
   for (const [name, write] of cases) {
@@ -151,15 +151,18 @@ test("promotion to ACTIVE re-validates against the live registry and fails close
 test("credential and payload shapes a first guard missed are refused on every write path, including updateCommand", async (t) => {
   const { file, store } = await fixture(t);
   const draft = await store.authoring.createDraftCommand({ command: newCommand(), recipe: newRecipe() });
-  const b64 = Buffer.from("x".repeat(300)).toString("base64");
+  // encoded binary has many distinct characters; a fixed byte sequence keeps the test deterministic
+  const b64 = Buffer.from(Array.from({ length: 300 }, (_, i) => (i * 7919 + 13) % 256)).toString("base64");
   const values = {
     "data URI with a parameter": `data:image/png;name=x.png;base64,${b64.slice(0, 40)}`,
     "SVG data URI": "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg'></svg>",
     "line-wrapped base64": Array.from({ length: 5 }, () => b64.slice(0, 76)).join("\n"),
+    "slash-prefixed base64 (JPEG starts with /9j/)": `/9j/${b64.slice(0, 300)}`,
     "base64 wrapped at 50 with spaces": Array.from({ length: 5 }, (_, i) => b64.slice(i * 50, i * 50 + 50)).join(" "),
     "base64url run": `${"A1b2-C3d4_".repeat(25)}`,
-    "lowercase bearer": "authorization: bearer abcdef0123456789xyz",
-    "basic auth": "Authorization: Basic dXNlcjpwYXNzd29yZDEyMw==",
+    "Stripe secret key": `sk_live_${"a1B2".repeat(6)}`,
+    "PEM private key": "-----BEGIN RSA PRIVATE KEY----- MIIB",
+    "AWS access key id": "AKIA0123456789ABCDEF",
     "google api key": `AIza${"B".repeat(35)}`,
     "slack token": "xoxb-1234567890-abcdefghij",
     "jwt": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
@@ -187,6 +190,7 @@ test("positive controls: ordinary authoring prose passes the content guard", asy
     "Secret ingredient: patience. Password-style captions are not used.",
     `A token at the length limit: ${"x".repeat(63)}.`,
     "Keep metadata: title, author and date. Password: required for the export dialog. Token: 12345678 credits.",
+    `Section\n${"-".repeat(60)}\n${"-".repeat(60)}\n${"=".repeat(70)}\nSee [the guide](https://example.com/guides/visual-commands/sticker-workflow/step-by-step) (https://example.com/guides/visual-commands/a-second-rather-long-reference-path).`,
     "Bearer bonds and basic instrumentalisation are period props; see https://example.com/reference/a-rather-long-path/that-keeps-going/and-going/still-a-url",
   ];
   const command = newCommand("sticker", "sticker-v1", {
@@ -246,4 +250,41 @@ test("non-string ids are refused as input errors, not raw driver errors", async 
   for (const id of [undefined, null, 42, { id: "x" }]) {
     await rejects(store.authoring.getCommand(id), "VALIDATION_FAILED");
   }
+});
+
+test("this server's own configured secrets are refused in any form, without guessing at prose", async (t) => {
+  const { file, store } = await fixture(t);
+  const secret = "or-test-0123456789abcdefFEDCBA";
+  const before = process.env.OPENROUTER_API_KEY;
+  const other = process.env.DYAI39_WEBHOOK_TOKEN;
+  process.env.OPENROUTER_API_KEY = secret;
+  process.env.DYAI39_WEBHOOK_TOKEN = "hook-9f8e7d6c5b4a3210zz";
+  t.after(() => {
+    if (before === undefined) delete process.env.OPENROUTER_API_KEY;
+    else process.env.OPENROUTER_API_KEY = before;
+    if (other === undefined) delete process.env.DYAI39_WEBHOOK_TOKEN;
+    else process.env.DYAI39_WEBHOOK_TOKEN = other;
+  });
+  for (const text of [`authorization: bearer ${secret}`, `key=${secret}.`, `Webhook hook-9f8e7d6c5b4a3210zz`]) {
+    const command = newCommand();
+    command.display.en.description = text;
+    await refusedWithoutTrace(file, store.authoring.createDraftCommand({ command, recipe: newRecipe() }), "FORBIDDEN_CONTENT").catch((error) => {
+      throw new Error(`${text}: ${error.message}`);
+    });
+  }
+  // a generic bearer value of unknown format is outside the guard's documented mechanisms
+  const prose = newCommand();
+  prose.display.en.description = "Requires only basic troubleshooting. Digest Wochenzusammenfassung. Bearer bonds.";
+  assert.equal((await store.authoring.createDraftCommand({ command: prose, recipe: newRecipe() })).lifecycle, "DRAFT");
+});
+
+test("seed import applies the per-document caps, not only the bundle as a whole", async (t) => {
+  const { cleanup, file } = migratedDatabase();
+  t.after(cleanup);
+  const store = openStore(file);
+  t.after(() => store.close());
+  const seed = seedBundle();
+  seed.catalogue.commands[0].tags = Array.from({ length: 3000 }, (_, i) => `tag-${i}`);
+  await rejects(store.importSeed(seed), "FORBIDDEN_CONTENT");
+  assert.deepEqual(tableCounts(file).commands, 0);
 });

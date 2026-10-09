@@ -20,7 +20,7 @@ database (D-014, D-017, ADR-0001).
 |---|---|---|
 | unset / `static` | ignored | Validated bootstrap JSON, exactly as before DYAI-39. This is the default and the current Render preview. |
 | `sqlite` | `file:` URL of an existing, migrated file | The durable store serves Commands/Recipes/Categories. |
-| `sqlite` | missing, non-`file:`, in-memory, absent file, unopenable path, unmigrated, drifted or corrupt | Fail closed. `CatalogueStoreError` with code `CONFIG_INVALID`, `DATABASE_MISSING`, `DATABASE_UNREADABLE`, `SCHEMA_NOT_MIGRATED`, `SCHEMA_DRIFT` or `DATABASE_CORRUPT`. A SQLite failure at query time (after open) is `DATABASE_UNREADABLE` too, and lock contention past the busy timeout is `DATABASE_BUSY` (transient). The schema-object comparison runs at open, not on every query. Pages error, and `/api/generate` answers `503 catalogue_unavailable`. **There is no fallback to the static JSON.** |
+| `sqlite` | missing, non-`file:`, in-memory, absent file, unopenable path, unmigrated, drifted or corrupt | Fail closed. `CatalogueStoreError` with code `CONFIG_INVALID`, `DATABASE_MISSING`, `DATABASE_UNREADABLE`, `SCHEMA_NOT_MIGRATED`, `SCHEMA_DRIFT` or `DATABASE_CORRUPT`. A SQLite failure at query time (after open) is `DATABASE_UNREADABLE` too, and lock contention past the busy timeout, at open or at query time, is `DATABASE_BUSY` (transient). The schema-object comparison runs at open, not on every query. Pages error, and `/api/generate` answers `503 catalogue_unavailable`. **There is no fallback to the static JSON.** |
 | anything else | – | `CONFIG_INVALID` |
 
 The runtime never creates or migrates a database. The sqlite module is loaded only when it is
@@ -80,31 +80,41 @@ route `/[locale]` and `/api/generate` read through the repositories.
 
 ## Forbidden content
 
-Before any write (and before the seed import), the repository runs `src/server/persistence/content-guard.ts`
-and refuses with `FORBIDDEN_CONTENT`. The guard measures these mechanisms, and nothing more:
+Before any write, and for each seed command and recipe before the import, the repository runs
+`src/server/persistence/content-guard.ts`. A hit is refused with `FORBIDDEN_CONTENT`. The guard checks
+only these mechanisms. It does not try to judge whether prose "looks like" a secret:
 
 1. **Structure:** credential-named keys (`apiKey`, `secret`, `token`, `password`, `authorization`, …) and
-   Model Capability keys (`providerModelId`, `allowlist`, `benchmarkStatus`, modalities, cost, privacy) at any depth.
-2. **Size:**
-   * any text longer than 4000 characters;
-   * any whitespace-free token longer than 64 characters (paths and `http(s)` URLs: 512);
-   * more than two tokens of 40+ characters in one text;
-   * a document above 32 KB (command), 64 KB (recipe) or 8 KB (category).
+   Model Capability keys (`providerModelId`, `allowlist`, `benchmarkStatus`, modalities, cost, privacy), at any depth.
+2. **This server's own secrets:** any text that contains the value of a configured secret environment variable.
+   That means `OPENROUTER_API_KEY` and every variable whose name ends in `KEY`, `SECRET`, `TOKEN` or
+   `PASSWORD`, if its value has 16 or more characters.
+3. **Fixed formats:** `data:` URIs, and the prefix-anchored credential formats in `CREDENTIAL_FORMATS`:
+   * `sk-or-v1-` (OpenRouter), `sk-proj-` / `sk-ant-`, Stripe `sk_/rk_live|test_`;
+   * PEM private keys;
+   * `AKIA…` (AWS), `AIza…` (Google), `xox?-` (Slack), `ghp_…` / `github_pat_…` (GitHub);
+   * JWTs, and URLs with `user:password@`.
+4. **Size:**
+   * 4000 characters per text;
+   * per document: 32 KB per command, 64 KB per recipe, 8 KB per category;
+   * unbroken tokens of at most 64 characters (512 for tokens that contain `://`);
+   * at most two tokens of 40+ characters per text, URL tokens not counted.
 
-   VC-01 copy stays far below this: its longest token is 24 characters and its largest document 1.6 KB.
-   Encoded images and keys are long unbroken tokens, so they hit these limits. A payload deliberately cut
-   into short whitespace-separated pieces is not detected, but it stays under 4000 characters per text.
-3. **Shapes:** `data:` URIs (`data:` + optional media type + `;` or `,`), auth-header values
-   (`bearer`/`basic`/`digest` + a 16+ character value with a digit, symbol or mixed case), and the formats listed in
-   `CREDENTIAL_SHAPES`: OpenRouter, OpenAI/Anthropic-style `sk-` keys, PEM private keys, AWS access key ids,
-   Google API keys, Slack and GitHub tokens, JWTs, URLs with `user:password@`.
+   Tokens with fewer than 8 distinct characters, such as separator lines (`-----`), are exempt from the
+   token rules. VC-01 copy stays far below these limits: its longest token is 24 characters and its
+   largest document is 1.6 KB.
 
-Credential detection in free text cannot be exhaustive: an unknown key format shorter than 65 characters
-is not recognised. What bounds it is the closed contract schemas (no field exists for credentials) and the
-rules above. Every check is a split or a single-pass regex without overlapping quantifiers. A test
-asserts that adversarial 4000-character inputs finish in under 50 ms. Positive controls in the tests
-(prose such as "basic understanding", "metadata:", "Password: required…", German text, URLs, a 63-character
-token) must pass.
+**Not detected (by design):** a credential in an unknown format that is shorter than 65 characters and is not one of this server's own secrets. Examples are a generic bearer token or a password typed into prose. The closed contract schemas bound this, since no field exists for credentials. Encoded images need long unbroken high-entropy tokens to be useful, so they hit the size rules. A payload cut into short pieces only fits under 4000 characters per text.
+
+The checks are splits and single-pass regexes without overlapping quantifiers. A test asserts that
+adversarial 4000-character inputs finish in under 50 ms. Positive controls in the tests must pass. They
+cover:
+
+* prose such as "basic troubleshooting", "Bearer bonds", "metadata:" and "Password: required…";
+* German text;
+* Markdown links and URLs in parentheses;
+* separator lines;
+* a 63-character token.
 
 Contract validation then applies the schemas and the provider-term scan. The schema contains no model,
 provider, secret or image table or column (`tests/persistence-schema.test.mjs`).
@@ -113,7 +123,7 @@ provider, secret or image table or column (`tests/persistence-schema.test.mjs`).
 
 ```bash
 npm run db:migrate -- --database data/catalogue.db   # create + migrate (idempotent)
-npm run db:import  -- --database data/catalogue.db   # import VC-01 seed (idempotent / conflict-refusing)
+npm run db:import  -- --database data/catalogue.db   # import VC-01 seed (bootstrap once; a matching re-run changes no catalogue content; conflicts refused)
 npm run db:status  -- --database data/catalogue.db   # migrations + per-lifecycle counts
 COMMAND_STORE_ADAPTER=sqlite DATABASE_URL=file:data/catalogue.db npm start
 ```

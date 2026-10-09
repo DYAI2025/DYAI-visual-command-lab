@@ -29,7 +29,7 @@ export function openDatabase(file: string, { create, busyTimeoutMs = 5000 }: { c
   }
   let db: DatabaseSync;
   try {
-    db = new DatabaseSync(file, { enableForeignKeyConstraints: true });
+    db = new DatabaseSync(file, { enableForeignKeyConstraints: true, timeout: Math.max(0, Math.trunc(busyTimeoutMs)) });
   } catch (error) {
     // e.g. the path is a directory, or the file is not readable
     throw new CatalogueStoreError("DATABASE_UNREADABLE", `database cannot be opened (${(error as Error).message})`);
@@ -44,7 +44,8 @@ export function openDatabase(file: string, { create, busyTimeoutMs = 5000 }: { c
     // SQLITE_CORRUPT (11) / SQLITE_NOTADB (26) mean a damaged file; anything else (read-only, I/O,
     // cannot open) means it cannot be used here
     const primary = ((error as { errcode?: number }).errcode ?? -1) & 0xff;
-    const code = primary === 11 || primary === 26 ? "DATABASE_CORRUPT" : "DATABASE_UNREADABLE";
+    // SQLITE_BUSY (5): another connection holds an exclusive lock past busy_timeout, transient
+    const code = primary === 11 || primary === 26 ? "DATABASE_CORRUPT" : primary === 5 ? "DATABASE_BUSY" : "DATABASE_UNREADABLE";
     throw new CatalogueStoreError(code, `database cannot be read (${(error as Error).message})`);
   }
   return db;
