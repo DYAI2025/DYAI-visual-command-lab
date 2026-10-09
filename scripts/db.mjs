@@ -6,14 +6,15 @@
 //
 // --database defaults to DATABASE_URL (a file: URL). The VC-01 JSON documents are read here, at the
 // import boundary, and nowhere on the runtime path: after import the database is the runtime truth
-// and the JSON is not written back (no dual-write). Re-running the import is idempotent; a seed that
-// differs from what is persisted is refused as a whole (IMPORT_CONFLICT), never merged.
+// and the JSON is not written back (no dual-write). The import bootstraps once; re-running it with the
+// same seed is a no-op, and a seed with changed or new entries is refused as a whole (IMPORT_CONFLICT),
+// never merged or published.
 
 import fs from "node:fs";
 import path from "node:path";
 
 import { databaseFile } from "../src/server/catalogue/config.ts";
-import { migrate, migrationStatus, openDatabase } from "../src/server/persistence/database.ts";
+import { assertMigrated, migrate, migrationStatus, openDatabase } from "../src/server/persistence/database.ts";
 import { CatalogueStoreError } from "../src/server/persistence/errors.ts";
 import { openSqliteCatalogueStore } from "../src/server/persistence/sqlite-store.ts";
 import { modelRegistry } from "../src/server/models/index.ts";
@@ -62,10 +63,17 @@ async function main() {
     case "status": {
       const db = openDatabase(file, { create: false });
       try {
+        const migrations = migrationStatus(db);
+        if (!migrations.every((migration) => migration.applied)) {
+          // reportable state, not a crash: tell the operator what is missing
+          console.log(JSON.stringify({ event: "db.status", migrations, migrated: false, commands: null, recipeVersions: null, categories: null }));
+          return;
+        }
+        assertMigrated(db);
         const counts = db.prepare("SELECT lifecycle, count(*) AS n FROM commands GROUP BY lifecycle ORDER BY lifecycle").all();
         const recipes = db.prepare("SELECT count(*) AS n FROM recipe_versions").get();
         const categories = db.prepare("SELECT count(*) AS n FROM categories").get();
-        console.log(JSON.stringify({ event: "db.status", migrations: migrationStatus(db), commands: counts, recipeVersions: recipes.n, categories: categories.n }));
+        console.log(JSON.stringify({ event: "db.status", migrations, migrated: true, commands: counts, recipeVersions: recipes.n, categories: categories.n }));
       } finally {
         db.close();
       }

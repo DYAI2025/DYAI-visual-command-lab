@@ -19,7 +19,13 @@ export function openDatabase(file: string, { create }: { create: boolean }): Dat
   if (!create && !fs.existsSync(file)) {
     throw new CatalogueStoreError("DATABASE_MISSING", "configured database file does not exist; run `npm run db:migrate`");
   }
-  const db = new DatabaseSync(file, { enableForeignKeyConstraints: true });
+  let db: DatabaseSync;
+  try {
+    db = new DatabaseSync(file, { enableForeignKeyConstraints: true });
+  } catch (error) {
+    // e.g. the path is a directory, or the file is not readable
+    throw new CatalogueStoreError("DATABASE_UNREADABLE", `database cannot be opened (${(error as Error).message})`);
+  }
   try {
     db.exec("PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
     const check = db.prepare("PRAGMA quick_check").get() as { quick_check?: string } | undefined;
@@ -45,6 +51,24 @@ export function inTransaction<T>(db: Database, body: () => T): T {
   }
 }
 
+const SCHEMA_SQL = "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name";
+const MIGRATIONS_TABLE_SQL = "CREATE TABLE IF NOT EXISTS schema_migrations (id TEXT PRIMARY KEY, checksum TEXT NOT NULL, applied_at TEXT NOT NULL) STRICT";
+
+let referenceSchema: string | null = null;
+/** sqlite_master of a database that ran exactly MIGRATIONS (built once, in memory). */
+function expectedSchema(): string {
+  if (referenceSchema === null) {
+    const reference = new DatabaseSync(":memory:", { enableForeignKeyConstraints: true });
+    try {
+      migrate(reference, () => "reference");
+      referenceSchema = JSON.stringify(reference.prepare(SCHEMA_SQL).all());
+    } finally {
+      reference.close();
+    }
+  }
+  return referenceSchema;
+}
+
 function recordedMigrations(db: Database): { id: string; checksum: string }[] | null {
   const table = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'").get();
   if (!table) return null;
@@ -67,7 +91,7 @@ function compare(db: Database): { pending: Migration[] } {
 
 /** Applies every pending migration, each in its own transaction. Returns the ids it applied. */
 export function migrate(db: Database, now: () => string = () => new Date().toISOString()): string[] {
-  db.exec("CREATE TABLE IF NOT EXISTS schema_migrations (id TEXT PRIMARY KEY, checksum TEXT NOT NULL, applied_at TEXT NOT NULL) STRICT");
+  db.exec(MIGRATIONS_TABLE_SQL);
   const { pending } = compare(db);
   for (const migration of pending) {
     inTransaction(db, () => {
@@ -78,7 +102,11 @@ export function migrate(db: Database, now: () => string = () => new Date().toISO
   return pending.map((migration) => migration.id);
 }
 
-/** The runtime never migrates: a database that is behind or ahead of this code is refused. */
+/**
+ * The runtime never migrates: a database that is behind or ahead of this code is refused, and so is
+ * one whose actual tables, indexes and triggers differ from what the recorded migrations create
+ * (a hand-altered schema or a partial restore).
+ */
 export function assertMigrated(db: Database): void {
   if (recordedMigrations(db) === null) {
     throw new CatalogueStoreError("SCHEMA_NOT_MIGRATED", "database has no schema; run `npm run db:migrate`");
@@ -86,6 +114,9 @@ export function assertMigrated(db: Database): void {
   const { pending } = compare(db);
   if (pending.length > 0) {
     throw new CatalogueStoreError("SCHEMA_NOT_MIGRATED", `pending migrations: ${pending.map((m) => m.id).join(", ")}`);
+  }
+  if (JSON.stringify(db.prepare(SCHEMA_SQL).all()) !== expectedSchema()) {
+    throw new CatalogueStoreError("SCHEMA_DRIFT", "database schema objects differ from the recorded migrations");
   }
 }
 

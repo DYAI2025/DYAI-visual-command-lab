@@ -126,7 +126,10 @@ test("a seed that differs from persisted content is refused as a whole and overw
   changed.catalogue.commands.find((c) => c.id === "mindmap").display.de.name = "Gedankenkarte (geändert)";
   changed.catalogue.commands.push(newCommand("freshidea", null));
   const error = await rejects(store.importSeed(changed), "IMPORT_CONFLICT");
-  assert.deepEqual(error.conflicts, ["command mindmap: persisted record differs from the seed"]);
+  assert.deepEqual(error.conflicts, [
+    "command mindmap: persisted record differs from the seed",
+    "command freshidea: not part of the imported seed; the catalogue was bootstrapped from the seed; author new content through the repository",
+  ]);
 
   // 2. same recipe version with different content
   const recipeChanged = seedBundle();
@@ -138,7 +141,7 @@ test("a seed that differs from persisted content is refused as a whole and overw
   const advanced = seedBundle();
   advanced.recipes.recipes.find((r) => r.recipeId === "mindmap-v1").version = "0.2.0";
   const advancedError = await rejects(store.importSeed(advanced), "IMPORT_CONFLICT");
-  assert.match(advancedError.conflicts.join("\n"), /recipe mindmap-v1: persisted at 0\.1\.0, seed has 0\.2\.0/);
+  assert.match(advancedError.conflicts.join("\n"), /recipe mindmap-v1@0\.2\.0: not part of the imported seed/);
 
   assert.deepEqual(rawQuery(file, "SELECT * FROM commands ORDER BY id"), snapshot, "no command row changed");
   assert.deepEqual(rawQuery(file, "SELECT * FROM recipe_versions ORDER BY recipe_id"), recipesBefore, "no recipe row changed");
@@ -146,18 +149,65 @@ test("a seed that differs from persisted content is refused as a whole and overw
   assert.equal(await store.commands.getById("freshidea"), null);
 });
 
-test("import refuses a slash an authored command already owns, and an invalid seed", async (t) => {
+test("import refuses a seed id an authored command already uses, and an invalid seed", async (t) => {
   const { file, cleanup } = migratedDatabase();
   t.after(cleanup);
   const store = openStore(file);
   t.after(() => store.close());
   await store.authoring.createDraftCommand({ command: newCommand("mindmap", "sticker-v1", { lane: "play" }), recipe: newRecipe() });
   const error = await rejects(store.importSeed(seedBundle()), "IMPORT_CONFLICT");
-  assert.match(error.conflicts.join("\n"), /command mindmap: persisted record differs from the seed/);
+  assert.match(error.conflicts.join("\n"), /command mindmap: an authored command already uses this id/);
   assert.deepEqual(tableCounts(file).import_runs, 0);
   assert.equal((await store.authoring.listCommands()).length, 1, "only the authored draft exists");
 
   const invalid = seedBundle();
   invalid.catalogue.commands[0].lane = "dance";
   await rejects(store.importSeed(invalid), "IMPORT_SOURCE_INVALID");
+});
+
+test("after the bootstrap the JSON is history: a new seed command is refused, never published", async (t) => {
+  const { file, cleanup } = migratedDatabase();
+  t.after(cleanup);
+  const store = openStore(file);
+  t.after(() => store.close());
+  await store.importSeed(seedBundle());
+  const counts = tableCounts(file);
+  const grown = seedBundle();
+  grown.catalogue.commands.push(newCommand("freshidea", null));
+  const error = await rejects(store.importSeed(grown), "IMPORT_CONFLICT");
+  assert.deepEqual(error.conflicts, ["command freshidea: not part of the imported seed; the catalogue was bootstrapped from the seed; author new content through the repository"]);
+  const grownRecipe = seedBundle();
+  grownRecipe.recipes.recipes.push(newRecipe());
+  await rejects(store.importSeed(grownRecipe), "IMPORT_CONFLICT");
+  assert.deepEqual(tableCounts(file), counts);
+  assert.equal(await store.commands.getById("freshidea"), null);
+  assert.equal(await store.authoring.getCommand("freshidea"), null);
+});
+
+test("a re-import compares with what the seed imported, so operator edits of imported commands are not conflicts", async (t) => {
+  const { file, cleanup } = migratedDatabase();
+  t.after(cleanup);
+  const store = openStore(file);
+  t.after(() => store.close());
+  await store.importSeed(seedBundle());
+  const testing = await store.authoring.transitionCommand("mindmap", "TESTING", { expectedRevision: 1 });
+  const edited = structuredClone(testing.command);
+  edited.tags = [...edited.tags, "operator-edit"];
+  await store.authoring.updateCommand("mindmap", { command: edited, categoryIds: [], expectedRevision: testing.revision });
+  const report = await store.importSeed(seedBundle());
+  assert.deepEqual({ ...report, sourceDigest: undefined }, { commandsInserted: 0, commandsUnchanged: 12, recipesInserted: 0, recipesUnchanged: 3, sourceDigest: undefined });
+  assert.deepEqual((await store.authoring.getCommand("mindmap")).command, edited, "the operator edit is kept, not overwritten by the seed");
+});
+
+test("a first import refuses a seed slash that an authored command with another id owns", async (t) => {
+  const { file, cleanup } = migratedDatabase();
+  t.after(cleanup);
+  const store = openStore(file);
+  t.after(() => store.close());
+  const sticker = newCommand("sticker", "sticker-v1", { aliases: [{ slash: "/mindmap", kind: "spelling_variant", publicUse: "allowed" }] });
+  await store.authoring.createDraftCommand({ command: sticker, recipe: newRecipe() });
+  const counts = tableCounts(file);
+  const error = await rejects(store.importSeed(seedBundle()), "IMPORT_CONFLICT");
+  assert.deepEqual(error.conflicts, ["command mindmap: /mindmap already belongs to sticker"]);
+  assert.deepEqual(tableCounts(file), counts, "nothing imported");
 });

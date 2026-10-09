@@ -175,3 +175,49 @@ test("recipe versions are immutable, ordered, and the current version cannot mov
   await rejects(f.store.authoring.addRecipeVersion(mindmapV2, { makeCurrent: true }), "RECIPE_IN_ACTIVE_USE");
   assert.deepEqual(await f.store.authoring.listRecipeVersions("mindmap-v1"), ["0.1.0"], "rolled back with the refused move");
 });
+
+test("an archived category stays on commands that already carry it, but cannot be newly assigned", async (t) => {
+  const f = await fixture(t);
+  await f.store.authoring.createCategory(category("retired"));
+  await f.store.authoring.createCategory(category("portraits"));
+  const created = await f.store.authoring.createDraftCommand({ command: newCommand(), recipe: newRecipe(), categoryIds: ["retired"] });
+  await f.store.authoring.archiveCategory("retired");
+  const edited = newCommand("sticker", "sticker-v1", { tags: ["play", "sticker", "edited"] });
+  const updated = await f.store.authoring.updateCommand("sticker", { command: edited, categoryIds: ["retired", "portraits"], expectedRevision: created.revision });
+  assert.deepEqual(updated.categoryIds, ["portraits", "retired"]);
+  await rejects(f.store.authoring.createDraftCommand({ command: newCommand("other", "sticker-v1"), categoryIds: ["retired"] }), "CATEGORY_ARCHIVED");
+});
+
+test("creating a command never moves the recipe version other commands execute", async (t) => {
+  const f = await fixture(t);
+  await f.store.authoring.createDraftCommand({ command: newCommand(), recipe: newRecipe() });
+  const v2 = newRecipe("sticker-v1", "0.2.0", { constraints: ["Square canvas."] });
+  await f.store.authoring.addRecipeVersion(v2, { makeCurrent: true });
+  const before = await f.store.authoring.getCommand("sticker");
+  await rejects(f.store.authoring.createDraftCommand({ command: newCommand("sticker2", "sticker-v1"), recipe: newRecipe() }), "RECIPE_VERSION_NOT_CURRENT");
+  await rejects(f.store.authoring.createDraftCommand({ command: newCommand("sticker2", "sticker-v1"), recipe: { ...v2, constraints: ["changed"] } }), "RECIPE_VERSION_CONFLICT");
+  assert.deepEqual(await f.store.recipes.getById("sticker-v1"), v2, "current version unchanged");
+  assert.deepEqual(await f.store.authoring.getCommand("sticker"), before, "the other command is untouched");
+  const second = await f.store.authoring.createDraftCommand({ command: newCommand("sticker2", "sticker-v1"), recipe: v2 });
+  assert.equal(second.recipeVersion, "0.2.0");
+});
+
+test("an archived command keeps reporting the recipe version it was archived with; restoring re-validates", async (t) => {
+  const f = await fixture(t);
+  const created = await f.store.authoring.createDraftCommand({ command: newCommand(), recipe: newRecipe() });
+  const archived = await f.store.authoring.archiveCommand("sticker", { expectedRevision: created.revision });
+  assert.equal(archived.recipeVersion, "0.1.0");
+  // a later version that would break this PLAY command (truth-preserving recipes belong to POLISH)
+  const polishOnly = newRecipe("sticker-v1", "0.2.0", {
+    truthMode: "truth_preserving_edit",
+    preserve: ["subject_identity", "people", "object_identity", "geometry", "logos_text", "visible_defects", "material_characteristics"],
+    mayChange: ["tonal_treatment"],
+  });
+  await f.store.authoring.addRecipeVersion(polishOnly, { makeCurrent: true });
+  const still = await f.store.authoring.getCommand("sticker");
+  assert.equal(still.recipeVersion, "0.1.0", "frozen at archive time");
+  assert.equal(still.revision, archived.revision, "no revision added while archived");
+  const error = await rejects(f.store.authoring.transitionCommand("sticker", "DRAFT", { expectedRevision: archived.revision }), "VALIDATION_FAILED");
+  assert.ok(error.issues.some((issue) => issue.code === "NON_POLISH_TRUTH_PRESERVING"));
+  assert.equal((await f.store.authoring.getCommand("sticker")).lifecycle, "ARCHIVED");
+});

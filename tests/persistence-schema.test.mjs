@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -6,7 +7,7 @@ import test from "node:test";
 
 import { assertMigrated, migrate, migrationStatus, openDatabase } from "../src/server/persistence/database.ts";
 import { MIGRATIONS } from "../src/server/persistence/migrations.ts";
-import { migratedDatabase, openStore, rawQuery, rejects, seededStore } from "./helpers/persistence.mjs";
+import { migratedDatabase, newCommand, newRecipe, openStore, rawQuery, rejects, seededStore } from "./helpers/persistence.mjs";
 
 // DYAI-39: schema, migrations and the database-level backstops. Everything runs against real files.
 
@@ -133,4 +134,50 @@ test("database backstops hold even when the repository is bypassed with raw SQL"
     /authored commands start as DRAFT/,
   );
   assert.deepEqual(db.prepare("SELECT * FROM commands WHERE id = 'mindmap'").get(), row, "the row is unchanged after every refused write");
+});
+
+test("an unopenable path and a hand-altered schema fail closed with availability codes", async (t) => {
+  const { dir, file, cleanup } = migratedDatabase();
+  t.after(cleanup);
+  // a directory where the database file should be
+  const asDirectory = path.join(dir, "dir.db");
+  fs.mkdirSync(asDirectory);
+  const unreadable = await rejects(Promise.resolve().then(() => openStore(asDirectory)), "DATABASE_UNREADABLE");
+  assert.equal(unreadable.unavailable, true);
+
+  // checksums intact, but a trigger was dropped by hand: the schema no longer matches its migrations
+  const altered = path.join(dir, "altered.db");
+  fs.copyFileSync(file, altered);
+  const raw = new DatabaseSync(altered);
+  raw.exec("DROP TRIGGER commands_kept");
+  raw.close();
+  await rejects(Promise.resolve().then(() => openStore(altered)), "SCHEMA_DRIFT");
+});
+
+test("a SQLite failure at query time (read or write path) surfaces as DATABASE_UNREADABLE", async (t) => {
+  const { file, store, cleanup } = await seededStore();
+  t.after(() => {
+    store.close();
+    cleanup();
+  });
+  // another process breaks the database after this store opened it
+  const raw = new DatabaseSync(file);
+  raw.exec("DROP INDEX commands_lifecycle; ALTER TABLE command_slashes RENAME TO command_slashes_gone;");
+  raw.close();
+  const error = await rejects(store.commands.findBySlash("/mindmap"), "DATABASE_UNREADABLE");
+  assert.equal(error.unavailable, true);
+  await rejects(store.authoring.createDraftCommand({ command: newCommand(), recipe: newRecipe() }), "DATABASE_UNREADABLE");
+  assert.equal((await store.authoring.getCommand("mindmap")).lifecycle, "ACTIVE", "tables that still exist keep serving reads");
+});
+
+test("db:status reports an unmigrated database instead of crashing", (t) => {
+  const { dir, cleanup } = migratedDatabase();
+  t.after(cleanup);
+  const empty = path.join(dir, "empty.db");
+  new DatabaseSync(empty).close();
+  const result = spawnSync(process.execPath, ["scripts/db.mjs", "status", "--database", empty], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  const status = JSON.parse(result.stdout.trim().split("\n").at(-1));
+  assert.equal(status.migrated, false);
+  assert.deepEqual(status.migrations.map((m) => m.applied), MIGRATIONS.map(() => false));
 });

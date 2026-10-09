@@ -12,9 +12,12 @@ export type CatalogueStoreErrorCode =
   | "SCHEMA_NOT_MIGRATED"
   | "SCHEMA_DRIFT"
   | "DATABASE_CORRUPT"
+  | "DATABASE_UNREADABLE"
   | "AUTHORING_UNAVAILABLE"
   // write validation
   | "VALIDATION_FAILED"
+  /** a database-level rule (trigger/constraint) refused a write the repository did not catch first */
+  | "CONSTRAINT_VIOLATION"
   | "FORBIDDEN_CONTENT"
   | "COMMAND_ID_CONFLICT"
   | "SLASH_CONFLICT"
@@ -41,6 +44,7 @@ const UNAVAILABLE = new Set<CatalogueStoreErrorCode>([
   "SCHEMA_NOT_MIGRATED",
   "SCHEMA_DRIFT",
   "DATABASE_CORRUPT",
+  "DATABASE_UNREADABLE",
   "AUTHORING_UNAVAILABLE",
 ]);
 

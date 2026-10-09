@@ -11,7 +11,7 @@ database (D-014, D-017, ADR-0001).
 |---|---|---|
 | Engine | SQLite through Node's built-in `node:sqlite` (Node ≥ 24.15, where the module is a release candidate) | Real durable file storage with transactions, `FOREIGN KEY`, `UNIQUE`, `CHECK`, `STRICT` tables and triggers. It adds no npm dependency and no native build. Local runs and CI need no service, so there is no remote prerequisite (DYAI-39 invariant 11). Next.js 16 keeps it as an external built-in with no config. |
 | Access layer | Plain SQL in `src/server/persistence/sqlite-store.ts`, no ORM | The domain is small and the contract validators (DYAI-31) already define every record. An ORM would add a second schema language. |
-| Migrations | Ordered, append-only entries in `src/server/persistence/migrations.ts`, recorded with their sha256 in `schema_migrations` | Deterministic, and bundled with the server code (no runtime file reads). A changed or unknown migration is refused (`SCHEMA_DRIFT`). |
+| Migrations | Ordered, append-only entries in `src/server/persistence/migrations.ts`, recorded with their sha256 in `schema_migrations` | Deterministic, and bundled with the server code (no runtime file reads). A changed or unknown migration is refused (`SCHEMA_DRIFT`), and so is a database whose tables, indexes or triggers differ from what its recorded migrations create (compared with a freshly migrated in-memory reference at open). |
 | Rejected | `better-sqlite3` (native addon), PGlite (pre-1.0, about 25 MB), Postgres + testcontainers (needs Docker locally and a hosted DB later; paid resources are out of scope) | See the DYAI-39 Jira preflight comment for the measured comparison. |
 
 ## Runtime selection
@@ -20,7 +20,7 @@ database (D-014, D-017, ADR-0001).
 |---|---|---|
 | unset / `static` | ignored | Validated bootstrap JSON, exactly as before DYAI-39. This is the default and the current Render preview. |
 | `sqlite` | `file:` URL of an existing, migrated file | The durable store serves Commands/Recipes/Categories. |
-| `sqlite` | missing, non-`file:`, in-memory, absent file, unmigrated, drifted or corrupt | Fail closed. `CatalogueStoreError` with code `CONFIG_INVALID`, `DATABASE_MISSING`, `SCHEMA_NOT_MIGRATED`, `SCHEMA_DRIFT` or `DATABASE_CORRUPT`. Pages error, and `/api/generate` answers `503 catalogue_unavailable`. **There is no fallback to the static JSON.** |
+| `sqlite` | missing, non-`file:`, in-memory, absent file, unopenable path, unmigrated, drifted or corrupt | Fail closed. `CatalogueStoreError` with code `CONFIG_INVALID`, `DATABASE_MISSING`, `DATABASE_UNREADABLE`, `SCHEMA_NOT_MIGRATED`, `SCHEMA_DRIFT` or `DATABASE_CORRUPT`. A SQLite failure at query time (after open) is `DATABASE_UNREADABLE` too. Pages error, and `/api/generate` answers `503 catalogue_unavailable`. **There is no fallback to the static JSON.** |
 | anything else | – | `CONFIG_INVALID` |
 
 The runtime never creates or migrates a database. The sqlite module is loaded only when it is
@@ -32,9 +32,9 @@ configured (`src/server/catalogue/index.ts`), so the default runtime never touch
 2. **Bootstrap**:
    * `npm run db:migrate -- --database <file>` creates the schema.
    * `npm run db:import -- --database <file>` imports the VC-01 seed. The import validates the whole bundle against the contract, with the registry, and runs in one transaction. VC-01 commands enter `ACTIVE` (they are the published catalogue) with origin `vc01_import`.
-3. **After activation** (`COMMAND_STORE_ADAPTER=sqlite`), the database is the runtime truth for Commands, Recipes and Categories. Authoring writes go through `AuthoringRepository` only. The JSON files are not written back and are not read at runtime: they are the historical seed. A re-import is safe:
-   * Content identical to what is persisted counts as `unchanged`.
-   * Any difference is refused as a whole (`IMPORT_CONFLICT`, nothing written).
+3. **After activation** (`COMMAND_STORE_ADAPTER=sqlite`), the database is the runtime truth for Commands, Recipes and Categories. Authoring writes go through `AuthoringRepository` only. The JSON files are not written back and are not read at runtime: they are the historical seed. The import bootstraps once; a re-run only confirms the seed:
+   * A seed command or recipe equal to what the seed originally imported counts as `unchanged`, even if an operator has since edited the persisted command (the comparison is with the `import` revision, not today's record).
+   * A seed entry that differs from what was imported, or that is new after the bootstrap, is refused as a whole (`IMPORT_CONFLICT`, nothing written). Adding a command to the JSON therefore never publishes it: new content is authored through the repository and goes `DRAFT → TESTING → ACTIVE`.
    * No JSON-to-database dual-write contract exists.
 4. Model Capability stays in the committed registry (`src/server/models/registry.json`) behind `ModelRegistryPort`. The store reads it only to validate writes.
 
@@ -49,8 +49,8 @@ route `/[locale]` and `/api/generate` read through the repositories.
 | `commands` | The full contract `CommandRecord` as canonical JSON, plus projected columns (`lane`, `maturity`, `lifecycle`, `recipe_id`, DE/EN texts) and metadata (`origin`, `revision`, `created_at`, `updated_at`, `archived_at`) | `CHECK`s tie every projected column to the stored document. `canonical_slash = '/' \|\| id` is `UNIQUE`. Blank DE/EN text is refused. A row is never deleted. Identity is fixed. Every write is exactly one new revision. |
 | `command_slashes` | Every canonical slash and alias, catalogue-wide | One slash names one command. Archived commands keep theirs. |
 | `recipe_versions` | One immutable row per `(recipe_id, version)` holding the full contract `Recipe` | No update, no delete. Versions only grow (semver). |
-| `recipes` | Current version per recipe id (what `Command.recipeId` executes) | Composite foreign key to an existing version. It cannot move while an `ACTIVE` command executes the recipe (`RECIPE_IN_ACTIVE_USE`). |
-| `categories` | Taxonomy: slug id, slug, DE/EN name and description, archived flag | Never deleted. An archived category cannot be newly assigned. |
+| `recipes` | Current version per recipe id (what `Command.recipeId` executes) | Composite foreign key to an existing version. It moves only through `addRecipeVersion(…, { makeCurrent: true })` or `setCurrentRecipeVersion`, never as a side effect of creating a command, and not while an `ACTIVE` command executes the recipe (`RECIPE_IN_ACTIVE_USE`). |
+| `categories` | Taxonomy: slug id, slug, DE/EN name and description, archived flag | Never deleted. An archived category cannot be newly assigned; commands that already carry it keep it through later edits. |
 | `command_categories` | Category ↔ Command | Independent of `lane`. Queryable by lane, category or both. |
 | `command_revisions` | Append-only history: the document, lifecycle, categories and recipe version at every write | No update, no delete. |
 | `import_runs` | Every successful seed import with its source sha256 and counts | – |
@@ -64,7 +64,7 @@ route `/[locale]` and `/api/generate` read through the repositories.
 * **New authored commands start as `DRAFT`**, enforced by a trigger.
 * **Promotion to `ACTIVE`** re-validates the persisted record against the contract with its current recipe and the live registry. The DYAI-44 promotion workflow can add stricter gates.
 * **Only `ACTIVE` commands reach the public repositories** (`listPublicCommands`, `getById`, `findBySlash`), and therefore the page and the generation route. A `DRAFT` or `TESTING` command is never resolvable or executable through them. Executability still needs an approved adapter on an allowlisted model (unchanged DYAI-31/37 rules).
-* **Archive** is soft removal. The command leaves the public and default operator queries, while its record, categories, slashes and full history stay. `ARCHIVED→DRAFT` restores it.
+* **Archive** is soft removal. The command leaves the public and default operator queries, while its record, categories, slashes and full history stay. An archived command is frozen: it reports the recipe version it was archived with. `ARCHIVED→DRAFT` restores it after re-validating it against the recipe version it would now execute.
 
 ## Repository interfaces
 
@@ -73,16 +73,22 @@ route `/[locale]` and `/api/generate` read through the repositories.
   * categories: create, archive, list;
   * recipe versions: add, set current, get, list;
   * commands: create a DRAFT (optionally with its recipe in the same transaction), update (optimistic `expectedRevision`), transition, archive, get, list (by lane, category or lifecycle), history.
-* **Failure reporting:** every refusal is a `CatalogueStoreError` with a code (`src/server/persistence/errors.ts`), and a write that fails rolls back completely.
+* **Failure reporting:** every refusal is a `CatalogueStoreError` with a code (`src/server/persistence/errors.ts`), and a write that fails rolls back completely. A database rule that refuses a write the repository did not catch first is `CONSTRAINT_VIOLATION`.
+* **Read consistency:** operator reads that combine several statements (`getCommand`, `listCommands`) run in one read transaction, so a record, its categories and its recipe version come from the same snapshot even while another process writes.
 * **Server-only:** no client component may reach `src/server/**` (`tests/ui-boundary.test.mjs`). With the static adapter, `authoringRepository()` fails closed (`AUTHORING_UNAVAILABLE`).
 
 ## Forbidden content
 
 Before any write, the repository rejects (`FORBIDDEN_CONTENT`):
 
-* credential fields and credential-like values (OpenRouter/API keys, bearer tokens, private keys);
+* credential fields and credential-like values: OpenRouter/OpenAI-style keys, Stripe-style keys, bearer/basic/digest auth values, `key: value` password/secret/token assignments, private keys, GitHub, AWS, Google and Slack tokens, JWTs, URLs with `user:password@`;
 * Model Capability fields (`providerModelId`, `allowlist`, `benchmarkStatus`, modalities, cost, privacy);
-* image payloads (`data:` URIs, long base64 runs).
+* image or binary payloads: any `data:` URI with a media type, base64/base64url runs of 200+ characters, line-wrapped base64 blocks;
+* any single text longer than 4000 characters (the seed's longest is 160).
+
+The credential list is pattern-based and cannot be exhaustive; the closed contract schemas and the length
+cap bound what an unrecognised shape could carry. Positive controls (ordinary prose such as "basic
+understanding", German text with umlauts, long plain descriptions) are part of the tests.
 
 Contract validation then applies the schemas and the provider-term scan. The schema contains no model,
 provider, secret or image table or column (`tests/persistence-schema.test.mjs`).

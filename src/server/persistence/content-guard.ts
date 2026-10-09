@@ -23,15 +23,33 @@ const MODEL_CAPABILITY_KEYS = new Set([
   "textOutputUsdPerMillionTokens",
 ]);
 
+// Credential shapes (case-insensitive where the scheme is). Not exhaustive by nature; the closed
+// contract schemas and the length cap below bound what a missed shape could carry.
 const CREDENTIAL_VALUE = [
-  /\bsk-or-v1-[A-Za-z0-9]{8,}/,
-  /\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}/,
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----/,
-  /\bBearer\s+[A-Za-z0-9._~+/-]{16,}/,
+  /\bsk-or-v1-[A-Za-z0-9]{8,}/i,
+  /\bsk-(?:proj-|ant-|live-|test-)?[A-Za-z0-9_-]{20,}/i,
+  /\b(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{10,}/,
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/i,
+  // an auth scheme followed by a token-like value (one with a digit: prose like "basic understanding" passes)
+  /\b(?:bearer|basic|digest)\s+(?=[A-Za-z._~+/=-]*[0-9])[A-Za-z0-9._~+/=-]{12,}/i,
+  /\b(?:api[-_ ]?key|secret|password|passwd|token)\s*[:=]\s*\S{8,}/i,
   /\bgh[pousr]_[A-Za-z0-9]{20,}/,
+  /\bgithub_pat_[A-Za-z0-9_]{20,}/,
   /\bAKIA[0-9A-Z]{16}\b/,
+  /\bAIza[0-9A-Za-z_-]{30,}/,
+  /\bxox[abposr]-[A-Za-z0-9-]{10,}/i,
+  /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/,
+  /\b[a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:[^\s/@]+@/i, // URL with user:password
 ];
-const IMAGE_PAYLOAD = [/data:[a-z]+\/[a-z0-9.+-]+;base64,/i, /[A-Za-z0-9+/]{256,}={0,2}/];
+// Image or binary payloads: any data: URI with a media type, long base64/base64url runs, and
+// line-wrapped base64 blocks.
+const IMAGE_PAYLOAD = [
+  /data:[a-z]+\/[a-z0-9.+-]+[;,]/i,
+  /[A-Za-z0-9+/_-]{200,}={0,2}/,
+  /(?:[A-Za-z0-9+/_-]{40,}={0,2}\s*\n\s*){3,}/,
+];
+/** No single persisted text needs to be longer; anything longer is refused rather than stored. */
+export const MAX_TEXT_LENGTH = 4000;
 
 /** Throws FORBIDDEN_CONTENT at the first credential, Model Capability fact or image payload. */
 export function assertNoForbiddenContent(document: unknown, label: string): void {
@@ -41,6 +59,7 @@ export function assertNoForbiddenContent(document: unknown, label: string): void
 
 function findForbidden(node: unknown, path: string): string | null {
   if (typeof node === "string") {
+    if (node.length > MAX_TEXT_LENGTH) return `${path || "/"}: value longer than ${MAX_TEXT_LENGTH} characters`;
     if (CREDENTIAL_VALUE.some((pattern) => pattern.test(node))) return `${path || "/"}: credential-like value`;
     if (IMAGE_PAYLOAD.some((pattern) => pattern.test(node))) return `${path || "/"}: image or binary payload`;
     return null;

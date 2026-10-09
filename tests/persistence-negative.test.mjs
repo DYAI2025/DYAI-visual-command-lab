@@ -147,3 +147,50 @@ test("promotion to ACTIVE re-validates against the live registry and fails close
   assert.ok(error.issues.some((issue) => issue.code === "ADAPTER_MODEL_UNRESOLVED"));
   assert.equal(await reopened.commands.getById("sticker"), null);
 });
+
+test("credential and payload shapes a first guard missed are refused on every write path, including updateCommand", async (t) => {
+  const { file, store } = await fixture(t);
+  const draft = await store.authoring.createDraftCommand({ command: newCommand(), recipe: newRecipe() });
+  const b64 = Buffer.from("x".repeat(300)).toString("base64");
+  const values = {
+    "data URI with a parameter": `data:image/png;name=x.png;base64,${b64.slice(0, 40)}`,
+    "SVG data URI": "data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg'></svg>",
+    "line-wrapped base64": Array.from({ length: 5 }, () => b64.slice(0, 76)).join("\n"),
+    "base64url run": `${"A1b2-C3d4_".repeat(25)}`,
+    "lowercase bearer": "authorization: bearer abcdef0123456789xyz",
+    "basic auth": "Authorization: Basic dXNlcjpwYXNzd29yZDEyMw==",
+    "google api key": `AIza${"B".repeat(35)}`,
+    "slack token": "xoxb-1234567890-abcdefghij",
+    "jwt": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
+    "url with credentials": "https://user:s3cret@example.com/x",
+    "oversized text": "a ".repeat(2100),
+  };
+  for (const [name, value] of Object.entries(values)) {
+    const command = newCommand();
+    command.display.en.description = `Turns your photo into a sticker. ${value}`;
+    await refusedWithoutTrace(file, store.authoring.updateCommand("sticker", { command, categoryIds: [], expectedRevision: draft.revision }), "FORBIDDEN_CONTENT").catch((error) => {
+      throw new Error(`update / ${name}: ${error.message}`);
+    });
+    await refusedWithoutTrace(file, store.authoring.addRecipeVersion(newRecipe("sticker-v1", "0.9.0", { baseIntent: value })), "FORBIDDEN_CONTENT").catch((error) => {
+      throw new Error(`recipe / ${name}: ${error.message}`);
+    });
+  }
+});
+
+test("positive controls: ordinary authoring prose passes the content guard", async (t) => {
+  const { store } = await fixture(t);
+  const prose = [
+    "Keep a basic understanding of the bearer of the badge; token-free layout.",
+    "Die Grundidee bleibt erhalten: klare Linien, keine erfundenen Logos, sichtbare Mängel bleiben.",
+    "Model the scene like a miniature diorama (tilt-shift), not a photo of a real place.",
+    "Secret ingredient: patience. Password-style captions are not used.",
+    "x".repeat(150),
+  ];
+  const command = newCommand("sticker", "sticker-v1", {
+    display: { en: { name: "Sticker", description: prose[0] }, de: { name: "Sticker", description: prose[1] } },
+    job: { en: prose[2], de: prose[1] },
+  });
+  const recipe = newRecipe("sticker-v1", "0.1.0", { constraints: prose, baseIntent: `${prose[0]} ${"Long but plain description. ".repeat(60)}` });
+  const created = await store.authoring.createDraftCommand({ command, recipe });
+  assert.deepEqual(created.command, command);
+});

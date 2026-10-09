@@ -106,6 +106,39 @@ function isConstraintError(error: unknown, pattern: RegExp): boolean {
   return error instanceof Error && pattern.test(error.message);
 }
 
+const SQLITE_CONSTRAINT = 19;
+
+/**
+ * Every repository call surfaces a CatalogueStoreError. A database-level rule that refused a write
+ * (constraint or trigger) is CONSTRAINT_VIOLATION; any other SQLite failure at query time (a dropped
+ * table, I/O or corruption found after open) means the store cannot serve: DATABASE_UNREADABLE, which
+ * callers treat like the open-time availability errors (the route answers 503, never falls back).
+ */
+function storeError(error: unknown): unknown {
+  if (error instanceof CatalogueStoreError) return error;
+  const sqlite = error as { code?: string; errcode?: number; message?: string };
+  if (sqlite?.code !== "ERR_SQLITE_ERROR") return error;
+  if (typeof sqlite.errcode === "number" && (sqlite.errcode & 0xff) === SQLITE_CONSTRAINT) {
+    return new CatalogueStoreError("CONSTRAINT_VIOLATION", sqlite.message ?? "constraint failed");
+  }
+  return new CatalogueStoreError("DATABASE_UNREADABLE", sqlite.message ?? "query failed");
+}
+
+/** Wraps every async method of a repository object so raw SQLite errors become CatalogueStoreErrors. */
+function guarded<T extends object>(repository: T): T {
+  const wrapped: Record<string, unknown> = {};
+  for (const [name, method] of Object.entries(repository)) {
+    wrapped[name] = async (...args: unknown[]) => {
+      try {
+        return await (method as (...a: unknown[]) => Promise<unknown>).apply(repository, args);
+      } catch (error) {
+        throw storeError(error);
+      }
+    };
+  }
+  return wrapped as T;
+}
+
 export function openSqliteCatalogueStore(options: SqliteStoreOptions): SqliteCatalogueStore {
   const db: Database = openDatabase(options.file, { create: false });
   try {
@@ -141,11 +174,29 @@ export function openSqliteCatalogueStore(options: SqliteStoreOptions): SqliteCat
     return document === null ? null : parse<Recipe>(document);
   };
 
+  /** The recipe version recorded with the command's latest revision (what an archived command last ran). */
+  const recordedRecipeVersion = (id: string) =>
+    (db.prepare("SELECT recipe_version FROM command_revisions WHERE command_id = ? ORDER BY revision DESC LIMIT 1").get(id) as
+      | { recipe_version: string | null }
+      | undefined)?.recipe_version ?? null;
+
+  /** Several statements read as one snapshot (another process may commit in between otherwise). */
+  function readConsistent<T>(body: () => T): T {
+    if (db.isTransaction) return body();
+    db.exec("BEGIN");
+    try {
+      return body();
+    } finally {
+      db.exec("COMMIT");
+    }
+  }
+
   const toAuthored = (row: CommandRow): AuthoredCommand => ({
     command: parse<CommandRecord>(row.document),
     lifecycle: row.lifecycle,
     categoryIds: categoryIdsOf(row.id),
-    recipeVersion: currentVersion(row.recipe_id),
+    // An archived command is frozen: it reports the version it was archived with, not today's current one.
+    recipeVersion: row.lifecycle === "ARCHIVED" ? recordedRecipeVersion(row.id) : currentVersion(row.recipe_id),
     origin: row.origin,
     revision: row.revision,
     createdAt: row.created_at,
@@ -214,12 +265,16 @@ export function openSqliteCatalogueStore(options: SqliteStoreOptions): SqliteCat
     }
   }
 
-  function assertCategoriesAssignable(categoryIds: readonly string[]) {
+  /** Categories must exist; an archived one may be kept where it is already assigned, never newly assigned. */
+  function assertCategoriesAssignable(categoryIds: readonly string[], alreadyAssigned: readonly string[] = []) {
+    if (!Array.isArray(categoryIds) || categoryIds.some((id) => typeof id !== "string")) {
+      throw new CatalogueStoreError("VALIDATION_FAILED", "categoryIds must be an array of category ids");
+    }
     if (new Set(categoryIds).size !== categoryIds.length) throw new CatalogueStoreError("VALIDATION_FAILED", "duplicate category id");
     for (const id of categoryIds) {
       const row = db.prepare("SELECT archived FROM categories WHERE id = ?").get(id) as { archived: number } | undefined;
       if (!row) throw new CatalogueStoreError("CATEGORY_NOT_FOUND", `category ${id} does not exist`);
-      if (row.archived === 1) throw new CatalogueStoreError("CATEGORY_ARCHIVED", `category ${id} is archived`);
+      if (row.archived === 1 && !alreadyAssigned.includes(id)) throw new CatalogueStoreError("CATEGORY_ARCHIVED", `category ${id} is archived`);
     }
   }
 
@@ -494,9 +549,23 @@ export function openSqliteCatalogueStore(options: SqliteStoreOptions): SqliteCat
       return inTransaction(db, () => {
         const at = now();
         if (recipe !== undefined) {
-          const result = putRecipeVersion(recipe, true, models, at);
-          if (!result.current) {
-            throw new CatalogueStoreError("RECIPE_VERSION_NOT_CURRENT", `${recipe.recipeId}@${recipe.version} is not the version the command would execute`);
+          // A new recipe id starts at this version. For an existing recipe the given version must be the
+          // current one: creating a command never moves what other commands execute (addRecipeVersion /
+          // setCurrentRecipeVersion do that, explicitly).
+          const current = currentVersion(recipe.recipeId);
+          if (current === null) {
+            putRecipeVersion(recipe, false, models, at);
+          } else {
+            const existing = recipeDocument(recipe.recipeId, recipe.version);
+            if (existing !== null && existing !== canonicalJson(recipe)) {
+              throw new CatalogueStoreError("RECIPE_VERSION_CONFLICT", `${recipe.recipeId}@${recipe.version} exists with different content; versions are immutable`);
+            }
+            if (current !== recipe.version) {
+              throw new CatalogueStoreError(
+                "RECIPE_VERSION_NOT_CURRENT",
+                `${recipe.recipeId} executes ${current}, not ${recipe.version}; add or select versions with addRecipeVersion/setCurrentRecipeVersion`,
+              );
+            }
           }
         }
         validateCommand(command, recipeFor(command), models);
@@ -526,7 +595,7 @@ export function openSqliteCatalogueStore(options: SqliteStoreOptions): SqliteCat
         if (command?.id !== id) throw new CatalogueStoreError("VALIDATION_FAILED", "a command's id (and canonical slash) never changes");
         validateCommand(command, recipeFor(command), models);
         assertSlashesFree(command);
-        assertCategoriesAssignable(categoryIds);
+        assertCategoriesAssignable(categoryIds, categoryIdsOf(id));
         const at = now();
         db.prepare(
           `UPDATE commands SET lane = ?, maturity = ?, recipe_id = ?, name_en = ?, description_en = ?, name_de = ?, description_de = ?, job_en = ?, job_de = ?,
@@ -548,8 +617,9 @@ export function openSqliteCatalogueStore(options: SqliteStoreOptions): SqliteCat
         if (!LIFECYCLE_TRANSITIONS.has(`${row.lifecycle}>${to}`)) {
           throw new CatalogueStoreError("LIFECYCLE_TRANSITION_FORBIDDEN", `${row.lifecycle} -> ${to} is not an authoring transition`);
         }
-        if (to === "ACTIVE") {
-          // Promotion re-validates the persisted record with its current recipe and the live registry.
+        if (to === "ACTIVE" || row.lifecycle === "ARCHIVED") {
+          // Promotion, and restoring an archived record, re-validate it with the recipe it would now
+          // execute and the live registry (the recipe may have moved on while it was archived).
           const command = parse<CommandRecord>(row.document);
           validateCommand(command, recipeFor(command), models);
         }
@@ -570,8 +640,10 @@ export function openSqliteCatalogueStore(options: SqliteStoreOptions): SqliteCat
     },
 
     async getCommand(id) {
-      const row = commandRow(id);
-      return row ? toAuthored(row) : null;
+      return readConsistent(() => {
+        const row = commandRow(id);
+        return row ? toAuthored(row) : null;
+      });
     },
 
     async listCommands(query: CommandQuery = {}) {
@@ -589,6 +661,7 @@ export function openSqliteCatalogueStore(options: SqliteStoreOptions): SqliteCat
         where.push("EXISTS (SELECT 1 FROM command_categories cc WHERE cc.command_id = c.id AND cc.category_id = ?)");
         params.push(query.categoryId);
       }
+      return readConsistent(() => {
       const rows = db
         .prepare(
           `SELECT c.id, c.lifecycle, c.document, c.recipe_id, c.origin, c.revision, c.created_at, c.updated_at, c.archived_at
@@ -596,6 +669,7 @@ export function openSqliteCatalogueStore(options: SqliteStoreOptions): SqliteCat
         )
         .all(...params) as unknown as CommandRow[];
       return rows.map(toAuthored);
+      });
     },
 
     async getCommandHistory(id) {
@@ -638,6 +712,11 @@ export function openSqliteCatalogueStore(options: SqliteStoreOptions): SqliteCat
       const at = now();
       const conflicts: string[] = [];
       const report = { commandsInserted: 0, commandsUnchanged: 0, recipesInserted: 0, recipesUnchanged: 0, sourceDigest };
+      // The seed bootstraps an empty catalogue once. Afterwards the database is the source of truth and
+      // the JSON is history: a re-run only confirms that the seed still equals what was imported, and
+      // anything new or different in it is refused, so the JSON never becomes a second way to publish.
+      const bootstrapped = (db.prepare("SELECT count(*) AS n FROM import_runs").get() as { n: number }).n > 0;
+      const after = "the catalogue was bootstrapped from the seed; author new content through the repository";
 
       for (const recipe of seedRecipes) {
         const existing = recipeDocument(recipe.recipeId, recipe.version);
@@ -645,8 +724,10 @@ export function openSqliteCatalogueStore(options: SqliteStoreOptions): SqliteCat
           report.recipesUnchanged += 1;
         } else if (existing !== null) {
           conflicts.push(`recipe ${recipe.recipeId}@${recipe.version}: persisted content differs from the seed`);
+        } else if (bootstrapped) {
+          conflicts.push(`recipe ${recipe.recipeId}@${recipe.version}: not part of the imported seed; ${after}`);
         } else if (currentVersion(recipe.recipeId) !== null) {
-          conflicts.push(`recipe ${recipe.recipeId}: persisted at ${currentVersion(recipe.recipeId)}, seed has ${recipe.version}; author new versions through the repository`);
+          conflicts.push(`recipe ${recipe.recipeId}: already persisted at ${currentVersion(recipe.recipeId)}, seed has ${recipe.version}`);
         } else {
           insertRecipeVersion(recipe, at);
           db.prepare("INSERT INTO recipes (recipe_id, current_version, updated_at) VALUES (?, ?, ?)").run(recipe.recipeId, recipe.version, at);
@@ -655,10 +736,21 @@ export function openSqliteCatalogueStore(options: SqliteStoreOptions): SqliteCat
       }
 
       for (const command of seedCommands) {
-        const row = commandRow(command.id);
-        if (row) {
-          if (row.document === canonicalJson(command)) report.commandsUnchanged += 1;
+        if (commandRow(command.id)) {
+          // Compared with what this seed imported (revision \"import\"), not with today's record: the
+          // operator may have evolved an imported command since, which is not a seed conflict.
+          const imported = (
+            db.prepare("SELECT document FROM command_revisions WHERE command_id = ? AND reason = 'import' ORDER BY revision LIMIT 1").get(command.id) as
+              | { document: string }
+              | undefined
+          )?.document;
+          if (imported === canonicalJson(command)) report.commandsUnchanged += 1;
+          else if (imported === undefined) conflicts.push(`command ${command.id}: an authored command already uses this id`);
           else conflicts.push(`command ${command.id}: persisted record differs from the seed`);
+          continue;
+        }
+        if (bootstrapped) {
+          conflicts.push(`command ${command.id}: not part of the imported seed; ${after}`);
           continue;
         }
         const taken = [command.canonicalSlash, ...command.aliases.map((alias) => alias.slash)]
@@ -691,5 +783,12 @@ export function openSqliteCatalogueStore(options: SqliteStoreOptions): SqliteCat
     if (open) db.close();
     open = false;
   };
-  return { commands, recipes, categories, authoring, importSeed, close };
+  return {
+    commands: guarded(commands),
+    recipes: guarded(recipes),
+    categories: guarded(categories),
+    authoring: guarded(authoring),
+    importSeed: guarded({ importSeed }).importSeed,
+    close,
+  };
 }
