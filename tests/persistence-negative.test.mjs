@@ -166,7 +166,7 @@ test("credential and payload shapes a first guard missed are refused on every wr
     "google api key": `AIza${"B".repeat(35)}`,
     "slack token": "xoxb-1234567890-abcdefghij",
     "jwt": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dozjgNryP4J3jVmNHl0w5N_XgL0n3I9PlFUP0THsR8U",
-    "connection string with credentials": "mongodb+srv://svc:s3cretPass@cluster0.example.net/db",
+
     "oversized text": "a ".repeat(2100),
   };
   for (const [name, value] of Object.entries(values)) {
@@ -254,9 +254,13 @@ test("the content guard stays linear on adversarial input (no catastrophic backt
     "QkAAAAAAAAAA".repeat(333),
     "0".repeat(MAX_TEXT_LENGTH),
     // every credential rule reached by a long same-class run without its terminator
-    ...["AIza", "sk-or-v1-", "sk-proj-", "sk_live_", "AKIA", "xoxb-", "ghp_", "github_pat_", "eyJ", "https://admin:", "https://a"].map(
-      (prefix) => prefix + "a".repeat(MAX_TEXT_LENGTH - prefix.length - 1) + " ",
-    ),
+    // each credential rule reached by a long run from its own character class, without a terminator
+    ...[
+      ["AIza", "a"], ["sk-or-v1-", "a"], ["sk-proj-", "a"], ["sk-ant-", "a"], ["sk_live_", "a"], ["rk_test_", "a"],
+      ["AKIA", "A"], ["xoxb-", "1"], ["ghp_", "a"], ["github_pat_", "a"], ["eyJ", "a"], ["-----BEGIN ", "A"],
+      ["data:", "a"], ["data:a/b;", "x"],
+    ].map(([prefix, fill]) => prefix + fill.repeat(MAX_TEXT_LENGTH - prefix.length - 1) + " "),
+    ("data:;").repeat(Math.floor(MAX_TEXT_LENGTH / 6)),
   ];
   for (const text of adversarial) {
     assert.ok(text.length <= MAX_TEXT_LENGTH, `${text.length}`);
@@ -449,13 +453,14 @@ test("positive controls: prose about data: URIs, templates and query strings wit
     "Login: https://login.example.com/?next=https://app.example.com:8443%26login_hint%3Dben@example.de",
     "OAuth: https://accounts.example.com/auth?redirect_uri=http://localhost:3000&login_hint=ben@example.de",
     "Redirect: ?next=https://host:8443&mail=a@b",
+    "[Files](ftp://files.example.com:21)[Mail](mailto:ben@example.de) and smtp://smtp.example.com:587?from=noreply@example.com",
   ];
   assert.equal((await store.authoring.addRecipeVersion(newRecipe("sticker-v1", "0.1.0", { constraints }))).created, true);
-  // while a real credential URL is refused, as written and JSON- or %2F/%3A-escaped
+  // while a real provider key is refused, as written, JSON-escaped and URL-encoded
   for (const [version, url] of [
-    ["0.2.0", "postgres://admin:hunter2pass@db.example.com:5432/app"],
-    ["0.3.0", '{"db":"postgres:\\/\\/admin:hunter2pass@db.example.com:5432\\/app"}'],
-    ["0.4.0", "postgresql%3A%2F%2Fadmin%3Ahunter2pass@db.example.com"],
+    ["0.2.0", `Use sk-or-v1-${"Z".repeat(32)} for calls.`],
+    ["0.3.0", JSON.stringify({ note: `key sk-or-v1-${"Z".repeat(32)}`, path: "a/b" }).replace(/\//g, "\\/")],
+    ["0.4.0", encodeURIComponent(`https://api.example.com/?k=sk-or-v1-${"Z".repeat(32)}`)],
   ]) {
     await rejects(store.authoring.addRecipeVersion(newRecipe("sticker-v1", version, { constraints: [url] })), "FORBIDDEN_CONTENT");
   }
@@ -543,7 +548,7 @@ function regexesInSource(code) {
       }
       if (line[i] !== "/") continue;
       const before = line.slice(0, i).trimEnd();
-      if (before !== "" && !/[=(,:[!&|?{};]$|\breturn$/.test(before)) continue;
+      if (before !== "" && !/(?:[=(,:[!&|?{};}]|=>)$|\breturn$/.test(before)) continue;
       let j = i + 1;
       let cls = false;
       for (; j < line.length; j++) {
@@ -570,6 +575,11 @@ test("every guard regex is registered and none can backtrack exponentially (stru
   for (const fine of [/(?:;[^,\s]{1,1600})?,/, /\b(?:ab|cd)?x{1,64}/, /[A-Za-z0-9+/_-]{16,}/g]) {
     assert.deepEqual(backtrackingRisks(fine.source), [], fine.source);
   }
+  // scanner canary: literals in the positions this module's style uses are all found
+  assert.deepEqual(
+    regexesInSource("const a = /x/;\nf(/y/g, (s) => /z/.test(s));\nif (c) { return /w/; }\n// not /v/ a comment").literals,
+    ["x", "y", "z", "w"],
+  );
   // completeness: every regex literal and RegExp constructor in the module is in GUARD_PATTERNS
   const { literals, constructors } = regexesInSource(fs.readFileSync("src/server/persistence/content-guard.ts", "utf8"));
   const registered = new Set(GUARD_PATTERNS.map((pattern) => pattern.source));
