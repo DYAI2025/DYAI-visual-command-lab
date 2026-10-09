@@ -56,19 +56,19 @@ export const CREDENTIAL_FORMATS: readonly [string, RegExp][] = [
   ["Slack token", /\bxox[abposr]-[0-9]{6}/],
   ["GitHub token", /\b(?:gh[pousr]_[A-Za-z0-9]{30}|github_pat_[A-Za-z0-9_]{20})/],
   ["JWT", /\beyJ[A-Za-z0-9_-]{8,64}\.eyJ[A-Za-z0-9_-]{8}/],
-  // user and password exclude "?#&=", so a nested URL inside a query string ("?next=https://host:8443&mail=a@b")
-  // is not read as userinfo
-  ["URL with user:password", /\b[a-z][a-z0-9+.-]{0,20}:\/\/[^\s/:@?#&=]{1,64}:[^\s/@?#&=]{1,128}@/i],
+  // the user part excludes "?#&=." and the password "?#", so a nested URL inside a query string
+  // ("?next=https://host:8443&mail=a@b", also with %26/%3F) is not read as userinfo
+  ["URL with user:password", /\b[a-z][a-z0-9+.-]{0,20}:\/\/[^\s/:@?#&=.]{1,64}:[^\s/@?#]{1,128}@/i],
 ];
 
 // RFC 2397: data:[<mediatype>][;<parameter>]*,<data>. A media type is token "/" token; a parameter
 // runs to the next ";" or ",". "{data:true,...}" in a code snippet has neither.
 // RFC 2045 token (ASCII, as RFC 7230 tchar): no tspecials, no braces, no non-ASCII letters
 const MEDIA_TOKEN = "[!#$%&'*+.^_`|~0-9a-z-]{1,80}";
-// a pasted data: URI carries base64 or percent-encoded data, or SVG/XML/HTML markup, right after the comma;
-// prose such as "data:image/*, return a URL", "data:image/png;base64,… in the response" or a "<base64>"
-// placeholder does not
-const DATA_URI = new RegExp(`\\bdata:(?:${MEDIA_TOKEN}/${MEDIA_TOKEN})?(?:;[^;,\\s]{1,200}){0,8},(?=[A-Za-z0-9+/=%]|<(?:svg|\\?xml|!doctype|html)\\b)`, "i");
+// a pasted data: URI carries base64 or percent-encoded data, or SVG/XML/HTML markup ("<svg ", "<svg>", "<?xml ",
+// "<!doctype ", "<html>"), right after the comma; prose such as "data:image/*, return a URL",
+// "data:image/png;base64,… in the response" or a "<base64>" / "<svg-markup>" placeholder does not
+const DATA_URI = new RegExp(`\\bdata:(?:${MEDIA_TOKEN}/${MEDIA_TOKEN})?(?:;[^;,\\s]{1,200}){0,8},(?=[A-Za-z0-9+/=%]|<(?:svg|html)[\\s>/]|<\\?xml\\s|<!doctype\\s)`, "i");
 
 const JPEG_MARKERS = new Set([0xdb, 0xc0, 0xc2, 0xc4, 0xfe, ...Array.from({ length: 16 }, (_, i) => 0xe0 + i)]);
 // first bytes of the signatures below (PNG, JPEG, GIF, WebP, BMP, TIFF II/MM, ICO); HEIF/AVIF is
@@ -96,6 +96,9 @@ export const IMAGE_SIGNATURES: readonly [string, (b: Uint8Array, i: number) => b
 ];
 const BASE64_RUN = /[A-Za-z0-9+/_-]{16,}/g;
 const HEX_RUN = /[0-9a-fA-F]{24,}/g;
+
+/** Every regular expression the guard runs on authoring text (checked for nested unbounded quantifiers in tests). */
+export const GUARD_PATTERNS: readonly RegExp[] = [...CREDENTIAL_FORMATS.map(([, pattern]) => pattern), DATA_URI, BASE64_RUN, HEX_RUN];
 
 /** Undo the JSON and URL escapes that would split an encoded run (linear, fixed replacements). */
 function unescapeRuns(text: string): string {
@@ -136,7 +139,10 @@ function forbiddenText(raw: string, secrets: readonly string[]): string | null {
   const text = unescapeRuns(raw);
   if (DATA_URI.test(raw) || DATA_URI.test(text)) return "data: URI";
   for (const [name, format] of CREDENTIAL_FORMATS) if (format.test(raw) || format.test(text)) return `credential (${name})`;
-  if (secrets.some((secret) => raw.includes(secret) || text.includes(secret))) return "credential (a configured server secret)";
+  // a secret as written, JSON-escaped or encodeURIComponent-encoded (the forms a pasted config or URL carries it in)
+  if (secrets.some((secret) => [secret, JSON.stringify(secret).slice(1, -1), encodeURIComponent(secret)].some((form) => raw.includes(form) || text.includes(form)))) {
+    return "credential (a configured server secret)";
+  }
   for (const [run] of text.matchAll(BASE64_RUN)) {
     const image = imageInRun(run, "base64");
     if (image) return `encoded ${image} image`;

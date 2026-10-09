@@ -253,6 +253,10 @@ test("the content guard stays linear on adversarial input (no catastrophic backt
     "/".repeat(MAX_TEXT_LENGTH),
     "QkAAAAAAAAAA".repeat(333),
     "0".repeat(MAX_TEXT_LENGTH),
+    // every credential rule reached by a long same-class run without its terminator
+    ...["AIza", "sk-or-v1-", "sk-proj-", "sk_live_", "AKIA", "xoxb-", "ghp_", "github_pat_", "eyJ", "https://admin:", "https://a"].map(
+      (prefix) => prefix + "a".repeat(MAX_TEXT_LENGTH - prefix.length - 1) + " ",
+    ),
   ];
   for (const text of adversarial) {
     assert.ok(text.length <= MAX_TEXT_LENGTH, `${text.length}`);
@@ -440,6 +444,9 @@ test("positive controls: prose about data: URIs, templates and query strings wit
     "Login: https://login.example.com/?next=https://app.example.com:8443&login_hint=ben@example.de",
     "Never return data:image/png;base64,<base64> in the response.",
     "Antwort niemals als data:image/png;base64,<Base64-Daten>, sondern als URL.",
+    "Never inline data:image/svg+xml,<svg-markup>; link a hosted file.",
+    "Kein data:image/svg+xml,<svg-Code> einbetten, sondern eine URL verlinken.",
+    "Login: https://login.example.com/?next=https://app.example.com:8443%26login_hint%3Dben@example.de",
   ];
   assert.equal((await store.authoring.addRecipeVersion(newRecipe("sticker-v1", "0.1.0", { constraints }))).created, true);
   // while a real credential URL is refused, as written and JSON- or %2F/%3A-escaped
@@ -449,5 +456,63 @@ test("positive controls: prose about data: URIs, templates and query strings wit
     ["0.4.0", "https%3A%2F%2Fadmin%3Ahunter2pass@db.example.com"],
   ]) {
     await rejects(store.authoring.addRecipeVersion(newRecipe("sticker-v1", version, { constraints: [url] })), "FORBIDDEN_CONTENT");
+  }
+});
+
+/** Groups repeated by a quantifier whose body itself has an unbounded quantifier (+, *, {n,}). */
+function nestedUnboundedQuantifiers(source) {
+  const findings = [];
+  const stack = [];
+  let inClass = false;
+  for (let i = 0; i < source.length; i++) {
+    const c = source[i];
+    if (c === "\\") {
+      i += 1;
+      continue;
+    }
+    if (inClass) {
+      if (c === "]") inClass = false;
+      continue;
+    }
+    if (c === "[") inClass = true;
+    else if (c === "(") stack.push({ start: i, unbounded: false });
+    else if (c === ")") {
+      const group = stack.pop();
+      const after = source.slice(i + 1);
+      const repeated = /^(?:[*+]|\{\d+,\d*\})/.exec(after);
+      const bounded = /^\{(\d+),(\d+)\}/.exec(after);
+      const repeats = repeated && !(bounded && Number(bounded[2]) <= 1);
+      if (repeats && group.unbounded) findings.push(source.slice(group.start, i + 1 + repeated[0].length));
+      if (group.unbounded && stack.length) stack[stack.length - 1].unbounded = true;
+    } else if ((c === "+" || c === "*" || (c === "{" && /^\{\d+,\}/.test(source.slice(i)))) && stack.length) {
+      stack[stack.length - 1].unbounded = true;
+    }
+  }
+  return findings;
+}
+
+test("no guard pattern repeats a group that contains an unbounded quantifier (structural backtracking check)", async () => {
+  const { GUARD_PATTERNS } = await import("../src/server/persistence/content-guard.ts");
+  // canary: the detector flags the shapes it exists to catch, and passes bounded nesting
+  for (const bad of [/(?:[a-z]+)+=/, /(?:[A-Za-z0-9+/_-]{40,}={0,2}\s*\n\s*){3,}/, /(a*)*b/, /(?:x(?:y+))+/]) {
+    assert.ok(nestedUnboundedQuantifiers(bad.source).length > 0, `detector misses ${bad.source}`);
+  }
+  assert.deepEqual(nestedUnboundedQuantifiers(/(?:;[^;,\s]{1,200}){0,8},/.source), []);
+  assert.ok(GUARD_PATTERNS.length >= 12);
+  for (const pattern of GUARD_PATTERNS) assert.deepEqual(nestedUnboundedQuantifiers(pattern.source), [], pattern.source);
+});
+
+test("a configured secret is found as written, JSON-escaped and encodeURIComponent-encoded", async (t) => {
+  const { store } = await fixture(t);
+  const secret = 'p@ss#w$rd&"x"/0123456789';
+  const before = process.env.DB_PASSWORD;
+  process.env.DB_PASSWORD = secret;
+  t.after(() => (before === undefined ? delete process.env.DB_PASSWORD : (process.env.DB_PASSWORD = before)));
+  for (const [version, text] of [
+    ["0.2.0", `connect with ${secret}`],
+    ["0.3.0", JSON.stringify({ password: undefined, dsn: `postgres://admin:${secret}@db` })],
+    ["0.4.0", encodeURIComponent(`postgres://admin:${secret}@db.example.com/app`)],
+  ]) {
+    await rejects(store.authoring.addRecipeVersion(newRecipe("sticker-v1", version, { constraints: [text] })), "FORBIDDEN_CONTENT");
   }
 });

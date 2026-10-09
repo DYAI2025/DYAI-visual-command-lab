@@ -91,19 +91,21 @@ a payload:
 1. **Structure:** credential-named keys (`apiKey`, `secret`, `token`, `password`, `authorization`, …) and
    Model Capability keys (`providerModelId`, `allowlist`, `benchmarkStatus`, modalities, cost, privacy) at any depth.
    An offending key is reported without its text, because the key may itself be the secret.
-2. **This server's own secrets:** any text that contains the value of a configured secret environment variable
+2. **This server's own secrets:** any text that contains, as written, JSON-escaped or `encodeURIComponent`-encoded,
+   the value of a configured secret environment variable
    (`OPENROUTER_API_KEY`, and every variable whose name ends in `KEY`, `SECRET`, `TOKEN` or `PASSWORD`, if its
    value has 16 or more characters).
 3. **Fixed formats:**
    * RFC 2397 `data:` URIs: `data:[type/subtype][;parameter]*,`. Type and subtype are RFC 2045 tokens (ASCII
      `!#$%&'*+.^_`|~`, digits, letters, `-`). The comma must be followed directly by data: a base64 or
-     percent-encoded character, or inline markup starting with `<svg`, `<?xml`, `<!doctype` or `<html`. So prose such
-     as "never return data:image/*, …", "data:image/png;base64,… in the response" or a `<base64>` placeholder passes. Parameters are any non-whitespace characters up to the next `;` or `,`. The guard accepts at most 8 parameters of at most 200 characters each. A
+     percent-encoded character, or inline markup opening with `<svg` / `<html` (followed by a space, `>` or `/`), `<?xml ` or `<!doctype `. So prose
+     such as "never return data:image/*, …", "data:image/png;base64,… in the response" or a `<base64>` / `<svg-markup>`
+     placeholder passes. Parameters are any non-whitespace characters up to the next `;` or `,`. The guard accepts at most 8 parameters of at most 200 characters each. A
      `{data:true,…}` code snippet is not a `data:` URI.
    * The prefix-anchored credential formats in `CREDENTIAL_FORMATS`: `sk-or-v1-` (OpenRouter), `sk-proj-` /
      `sk-ant-`, Stripe `sk_/rk_live|test_`, PEM private keys, `AKIA…` (AWS), `AIza…` (Google), `xox?-` (Slack),
      `ghp_…` / `github_pat_…` (GitHub), JWTs, and URLs with `user:password@`.
-   * These formats are matched against the text as written and with the JSON/URL escaping of item 4 undone. User and password in the userinfo cannot contain `?`, `#`, `&` or `=`. So a query string with a colon and a later e-mail address is not a credential, and neither is a nested URL inside a query (`?next=https://host:8443&mail=a@b`). A password that itself contains one of these characters is not detected.
+   * These formats are matched against the text as written and with the JSON/URL escaping of item 4 undone. The user part of the userinfo cannot contain `?`, `#`, `&`, `=` or `.`, and the password cannot contain `?` or `#`. So a query string with a colon and a later e-mail address is not a credential, and neither is a nested URL inside a query (`?next=https://host:8443&mail=a@b`, also with `%26`/`%3F`). A password containing `?` or `#`, and a user name containing one of the excluded characters, are not detected.
 4. **Image bytes:**
    * The guard first undoes JSON (`\/`) and URL (`%2F`, `%2B`, `%3D`, `%3A`,
      `%3B`, `%2C`) escaping.
@@ -128,8 +130,8 @@ a payload:
 * Image bytes without their file header, other binary data, and other encodings such as base32.
 * Hex dumps with separators: the default `xxd` output, `xxd -i` C arrays, `\x89\x50` byte literals.
 * A credential URL whose `@` is percent-encoded (`%40`, as in full `encodeURIComponent` output). JSON-escaped
-  (`\/`) and `%2F`/`%3A`-escaped credential URLs are found. A configured server secret is found in any of
-  these forms.
+  (`\/`) and `%2F`/`%3A`-escaped credential URLs are found. A configured server secret is also found JSON-escaped
+  or fully `encodeURIComponent`-encoded.
 * Escaping other than the listed JSON `\/` and `%XX` forms, such as HTML entities (`&#x2F;`) or double URL encoding
   (`%252F`).
 * Anything deliberately disguised.
@@ -140,10 +142,13 @@ credentials or bytes.
 The checks are single-pass regexes without overlapping quantifiers plus a linear decode-and-scan that uses only
 byte compares.
 
-* **Gated:** catastrophic backtracking, the failure that would block the server for seconds. A test requires each
-  adversarial 4000-character text to cost at most 8× a random encoded text of the same length, with a 10 ms floor.
-  Reference and candidate are measured interleaved, taking the minimum over several runs. A backtracking regex
-  costs orders of magnitude more and fails the test.
+* **Gated:** catastrophic backtracking, the failure that would block the server for seconds. Two tests guard it:
+  * A structural test checks every pattern the guard runs (`GUARD_PATTERNS`). None may repeat a group that itself
+    contains an unbounded quantifier (`+`, `*`, `{n,}`). This is the shape behind exponential backtracking, and
+    the test's detector is canaried on known-bad patterns.
+  * A timing test runs adversarial 4000-character texts, including one per credential prefix with a long run that
+    has no terminator. Each may cost at most 8× a random encoded text of the same length, with a 10 ms floor,
+    measured interleaved, minimum of several runs.
 * **Not gated:** constant-factor efficiency. For example, an allocation per compared byte position slows the scan
   several times but stays linear. Wall-clock ratios cannot separate that reliably from machine load, so no test
   claims to catch it.
