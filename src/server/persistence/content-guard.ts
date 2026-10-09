@@ -61,29 +61,33 @@ export const CREDENTIAL_FORMATS: readonly [string, RegExp][] = [
 
 // RFC 2397: data:[<mediatype>][;<parameter>]*,<data>. A media type is token "/" token; a parameter
 // runs to the next ";" or ",". "{data:true,...}" in a code snippet has neither.
-const MEDIA_TOKEN = "[a-z0-9!#$&^_.+-]{1,80}";
+// RFC 2045 token: printable characters except the tspecials ()<>@,;:\"/[]?= and whitespace
+const MEDIA_TOKEN = '[^\\s()<>@,;:\\\\"/\\[\\]?=]{1,80}';
 const DATA_URI = new RegExp(`\\bdata:(?:${MEDIA_TOKEN}/${MEDIA_TOKEN})?(?:;[^;,\\s]{1,200}){0,8},`, "i");
 
-function ascii(bytes: Uint8Array, from: number, to: number): string {
-  return String.fromCharCode(...bytes.subarray(from, to));
-}
-
 const JPEG_MARKERS = new Set([0xdb, 0xc0, 0xc2, 0xc4, 0xfe, ...Array.from({ length: 16 }, (_, i) => 0xe0 + i)]);
-const SIGNATURE_WINDOW = 12;
 // first bytes of the signatures below (PNG, JPEG, GIF, WebP, BMP, TIFF II/MM, ICO); HEIF/AVIF is
 // recognised by "f" of "ftyp" at offset 4
 const SIGNATURE_FIRST_BYTES = new Set([0x89, 0xff, 0x47, 0x52, 0x42, 0x49, 0x4d, 0x00]);
+const codes = (text: string) => Array.from(text, (c) => c.charCodeAt(0));
+/** b[i..] equals expected (plain byte compares: no allocation per position). */
+const at = (b: Uint8Array, i: number, expected: readonly number[]) => expected.every((value, k) => b[i + k] === value);
+const PNG = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+const RIFF = codes("RIFF");
+const WEBP = codes("WEBP");
+const FTYP = codes("ftyp");
+const HEIF_BRANDS = ["heic", "heix", "hevc", "mif1", "msf1", "avif", "avis"].map(codes);
 
 /** File signatures (4+ bytes each) of common raster image formats, checked at byte i of b. */
 export const IMAGE_SIGNATURES: readonly [string, (b: Uint8Array, i: number) => boolean][] = [
-  ["PNG", (b, i) => b[i] === 0x89 && ascii(b, i + 1, i + 4) === "PNG" && b[i + 4] === 0x0d && b[i + 5] === 0x0a && b[i + 6] === 0x1a && b[i + 7] === 0x0a],
+  ["PNG", (b, i) => at(b, i, PNG)],
   ["JPEG", (b, i) => b[i] === 0xff && b[i + 1] === 0xd8 && b[i + 2] === 0xff && JPEG_MARKERS.has(b[i + 3])],
-  ["GIF", (b, i) => /^GIF8[79]a$/.test(ascii(b, i, i + 6))],
-  ["WebP", (b, i) => ascii(b, i, i + 4) === "RIFF" && ascii(b, i + 8, i + 12) === "WEBP"],
-  ["BMP", (b, i) => ascii(b, i, i + 2) === "BM" && b[i + 6] === 0 && b[i + 7] === 0 && b[i + 8] === 0 && b[i + 9] === 0],
-  ["TIFF", (b, i) => (ascii(b, i, i + 2) === "II" && b[i + 2] === 42 && b[i + 3] === 0) || (ascii(b, i, i + 2) === "MM" && b[i + 2] === 0 && b[i + 3] === 42)],
-  ["ICO", (b, i) => b[i] === 0 && b[i + 1] === 0 && b[i + 2] === 1 && b[i + 3] === 0 && b[i + 4] > 0 && b[i + 5] === 0],
-  ["HEIF/AVIF", (b, i) => ascii(b, i + 4, i + 8) === "ftyp" && /^(?:heic|heix|hevc|mif1|msf1|avif|avis)$/.test(ascii(b, i + 8, i + 12))],
+  ["GIF", (b, i) => at(b, i, [0x47, 0x49, 0x46, 0x38]) && (b[i + 4] === 0x37 || b[i + 4] === 0x39) && b[i + 5] === 0x61],
+  ["WebP", (b, i) => at(b, i, RIFF) && at(b, i + 8, WEBP)],
+  ["BMP", (b, i) => b[i] === 0x42 && b[i + 1] === 0x4d && at(b, i + 6, [0, 0, 0, 0])],
+  ["TIFF", (b, i) => at(b, i, [0x49, 0x49, 42, 0]) || at(b, i, [0x4d, 0x4d, 0, 42])],
+  ["ICO", (b, i) => at(b, i, [0, 0, 1, 0]) && b[i + 4] > 0 && b[i + 5] === 0],
+  ["HEIF/AVIF", (b, i) => at(b, i + 4, FTYP) && HEIF_BRANDS.some((brand) => at(b, i + 8, brand))],
 ];
 const BASE64_RUN = /[A-Za-z0-9+/_-]{16,}/g;
 const HEX_RUN = /[0-9a-fA-F]{24,}/g;
@@ -104,8 +108,7 @@ function imageInRun(run: string, encoding: "base64" | "hex"): string | null {
     const bytes = Buffer.from(normalized.slice(offset, offset + usable), encoding);
     for (let i = 0; i + 4 <= bytes.length; i++) {
       if (!SIGNATURE_FIRST_BYTES.has(bytes[i]) && bytes[i + 4] !== 0x66) continue;
-      const window = bytes.subarray(i, i + SIGNATURE_WINDOW);
-      const hit = IMAGE_SIGNATURES.find(([, matches]) => matches(window, 0));
+      const hit = IMAGE_SIGNATURES.find(([, matches]) => matches(bytes, i));
       if (hit) return hit[0];
     }
   }
@@ -123,9 +126,10 @@ function configuredSecrets(env: Record<string, string | undefined>): string[] {
 
 function forbiddenText(raw: string, secrets: readonly string[]): string | null {
   if (raw.length > MAX_TEXT_LENGTH) return `text longer than ${MAX_TEXT_LENGTH} characters`;
+  // escaping is undone only for the data: URI and image checks; credential formats see the raw text
   const text = unescapeRuns(raw);
-  if (DATA_URI.test(text)) return "data: URI";
-  for (const [name, format] of CREDENTIAL_FORMATS) if (format.test(text)) return `credential (${name})`;
+  if (DATA_URI.test(raw) || DATA_URI.test(text)) return "data: URI";
+  for (const [name, format] of CREDENTIAL_FORMATS) if (format.test(raw)) return `credential (${name})`;
   if (secrets.some((secret) => raw.includes(secret) || text.includes(secret))) return "credential (a configured server secret)";
   for (const [run] of text.matchAll(BASE64_RUN)) {
     const image = imageInRun(run, "base64");

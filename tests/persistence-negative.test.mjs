@@ -231,6 +231,11 @@ test("the content guard stays linear on adversarial input (no catastrophic backt
     ("http://" + "a".repeat(40) + ":").repeat(80),
     ("eyJ" + "a".repeat(60) + " ").repeat(60),
     (" ").repeat(MAX_TEXT_LENGTH),
+    // low-entropy runs decode to bytes that pass the first-byte prefilter at every position
+    "A".repeat(MAX_TEXT_LENGTH),
+    "/".repeat(MAX_TEXT_LENGTH),
+    "QkAAAAAAAAAA".repeat(333),
+    "0".repeat(MAX_TEXT_LENGTH),
   ];
   for (const text of adversarial) {
     assert.ok(text.length <= MAX_TEXT_LENGTH, `${text.length}`);
@@ -386,5 +391,27 @@ test("positive control: 2000 sha256 digests in hex and base64 pass the image che
   for (let i = 0; i < 2000; i++) {
     const digest = createHash("sha256").update(`fixture-${i}`).digest();
     assertNoForbiddenContent({ refs: [digest.toString("hex"), digest.toString("base64"), digest.toString("base64url")] }, "recipe", {});
+  }
+});
+
+test("the image scan of a maximal recipe of low-entropy runs stays well under a request budget", async () => {
+  const { assertNoForbiddenContent } = await import("../src/server/persistence/content-guard.ts");
+  for (const filler of ["A", "/", "0"]) {
+    const recipe = { constraints: Array.from({ length: 15 }, () => filler.repeat(4000)) };
+    const started = performance.now();
+    assertNoForbiddenContent(recipe, "recipe", {});
+    const ms = performance.now() - started;
+    assert.ok(ms < 100, `${filler}: ${ms.toFixed(1)} ms`);
+  }
+});
+
+test("positive control: URL-escaped text is not read as credentials; RFC 2045 media types are data: URIs", async (t) => {
+  const { store } = await fixture(t);
+  const ok = await store.authoring.addRecipeVersion(
+    newRecipe("sticker-v1", "0.1.0", { constraints: ["Feedback: [form](https://forms.example.com?subject=Feedback%3A%20Sticker&reply=team@dyai.studio)"] }),
+  );
+  assert.equal(ok.created, true);
+  for (const uri of ["data:image/*;x=1,AAAA", "data:text/x~y,hi"]) {
+    await rejects(store.authoring.addRecipeVersion(newRecipe("sticker-v1", "0.2.0", { constraints: [`see ${uri}`] })), "FORBIDDEN_CONTENT");
   }
 });
